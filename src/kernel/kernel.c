@@ -4,47 +4,55 @@
 #include "timer.h"
 #include "keyboard.h"
 
+/**
+ * KERNEL STARTING POINT
+ * ---------------------
+ * This is where the magic happens.
+ * The system has been initialized with GDT, IDT, and basic drivers.
+ */
 void kernel_main() {
-    // 1. Initialize the GDT
-    init_gdt();
+    /* ----------------------------------------------------------------------
+     * 1. SYSTEM INITIALIZATION (Low-level drivers)
+     * ---------------------------------------------------------------------- */
+    init_gdt();          // Setup memory segments
+    init_idt();          // Setup interrupt handling
 
-    // 2. Initialize the IDT
-    init_idt();
+    clear_screen();      // Prepare VGA Video memory
 
-    // 3. Initialize the screen
-    clear_screen();
-    kprint("Rtech-OS Kernel Loaded.\n");
-    kprint("Initializing drivers...\n");
+    init_timer(50);      // Start System Timer (IRQ 0) at 50Hz
+    init_keyboard();     // Start Keyboard Driver (IRQ 1)
 
-    // 4. Initialize the PIT (System Timer) at 50Hz
-    init_timer(50);
-    kprint("Timer initialized.\n");
-
-    // 5. Initialize the Keyboard
-    init_keyboard();
-    kprint("Keyboard initialized.\n");
-
-    // Enable interrupts
+    /* Enable Interrupts - The system is now alive and responding to events */
     __asm__ volatile("sti");
 
-    kprint("System ready.\n");
-    kprint("--------------------------------------------------\n");
 
-    /*
-     * CLEAN UI ENTRY POINT HOOK:
-     * This area is designated for the User Interface implementation.
-     * All low-level drivers (Screen, Keyboard, Timer, GDT, IDT) are fully active.
+    /* ----------------------------------------------------------------------
+     * 2. YOUR USER INTERFACE (Playground)
+     * ----------------------------------------------------------------------
+     * You can now use any of the driver functions defined in headers like
+     * screen.h, keyboard.h, and timer.h.
+     *
+     * Example: kprint("Hello World!");
      */
 
+    kprint("Rtech-OS Kernel Foundation Loaded.\n");
+    kprint("Type something to see it on screen, or start building your UI!\n");
+    kprint("> ");
+
     while(1) {
+        /* Example: Simple Echo Loop */
         char c = kernel_get_char();
         if (c != 0) {
             if (c == '\b') {
                 kprint_backspace();
+            } else if (c == '\n') {
+                kprint("\n> ");
             } else {
                 char str[2] = {c, 0};
                 kprint(str);
             }
         }
+
+        /* You can also use kernel_sleep(ticks) to timing-based logic */
     }
 }
