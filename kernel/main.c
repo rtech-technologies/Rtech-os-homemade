@@ -6,6 +6,8 @@
 #include "memory.h"
 #include "../drivers/storage/ahci.h"
 #include "../fs/fat32.h"
+#include "../runtime/rsllinker.h"
+#include "../runtime/bmp_loader.h"
 
 __attribute__((used, section(".limine_requests")))
 static volatile LIMINE_BASE_REVISION(2);
@@ -51,6 +53,24 @@ void kmain(void) {
         file_content[0] = 'F'; file_content[1] = 'A'; file_content[2] = 'I'; file_content[3] = 'L'; file_content[4] = '\0';
     }
 
+    app_arena_init(4); // Allocate some blocks for our file loading
+
+    char rsllink_data[1024] = {0};
+    rsl_manifest_t manifest;
+    bool has_manifest = false;
+    if (fs_read_file("test.rsllink", rsllink_data)) {
+        has_manifest = parse_rsllink(rsllink_data, &manifest);
+    }
+
+    sprite_t test_sprite;
+    bool has_sprite = false;
+    if (has_manifest && manifest.asset_count > 0) {
+        void *bmp_buf = app_malloc(64000); // 64KB should be plenty for 16x16 test bmp
+        if (bmp_buf && fs_read_file(manifest.assets[0].path, bmp_buf)) {
+            has_sprite = load_bmp(bmp_buf, &test_sprite);
+        }
+    }
+
     // Main loop
     for (;;) {
         update_keyboard();
@@ -83,6 +103,16 @@ void kmain(void) {
 
         draw_text_uv("Type here:", 0.3f, 0.22f, 0x00FFFF00); // Yellow
         draw_text_uv(typing_buffer, 0.3f, 0.25f, 0x00FFFFFF); // White typed text
+
+        if (has_manifest) {
+            draw_text_uv("Loaded Manifest Name:", 0.3f, 0.30f, 0x0000FF00); // Green
+            draw_text_uv(manifest.name, 0.3f, 0.33f, 0x00FFFFFF);
+        }
+
+        if (has_sprite) {
+            draw_text_uv("Sprite loaded and drawn at UV (0.5, 0.5):", 0.3f, 0.40f, 0x0000FF00);
+            draw_sprite_uv(&test_sprite, 0.5f, 0.5f, 4.0f, 4.0f); // Draw it 4x larger
+        }
 
         swap_buffers();
     }

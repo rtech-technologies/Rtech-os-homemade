@@ -3,9 +3,9 @@
 #include <stddef.h>
 
 static struct limine_framebuffer *g_fb = NULL;
-static uint32_t *backbuffer = NULL;
-static uint64_t fb_width = 0;
-static uint64_t fb_height = 0;
+uint32_t *backbuffer = NULL;
+uint64_t fb_width = 0;
+uint64_t fb_height = 0;
 static uint64_t fb_pitch = 0;
 
 // Since we have no malloc yet, we will place the backbuffer in a statically allocated BSS section.

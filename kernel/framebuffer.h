@@ -10,4 +10,8 @@ void draw_rect_uv(float u1, float v1, float u2, float v2, uint32_t color);
 void draw_text_uv(const char *str, float u, float v, uint32_t color);
 void swap_buffers(void);
 
+extern uint64_t fb_width;
+extern uint64_t fb_height;
+extern uint32_t *backbuffer;
+
 #endif

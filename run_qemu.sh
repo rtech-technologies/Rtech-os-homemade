@@ -9,9 +9,11 @@ if [ ! -f "disk.img" ]; then
     echo "Creating virtual FAT32 drive disk.img..."
     dd if=/dev/zero of=disk.img bs=1M count=32
     mkfs.fat -F 32 disk.img
-    # Use mcopy from mtools to put a file on it
+    # Use mcopy from mtools to put test files on it
     echo "Hello from FAT32 Disk!" > test.txt
     mcopy -i disk.img test.txt ::/
+    mcopy -i disk.img test.rsllink ::/
+    mcopy -i disk.img test.bmp ::/
     rm test.txt
 fi
 
