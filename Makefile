@@ -72,3 +72,8 @@ tests/test_bmp: tests/test_bmp.c runtime/bmp_loader.c
 
 tests/test_rsl_compiler: tests/test_rsl_compiler.c compiler/parser.c compiler/lexer.c
 	gcc -Wall -Wextra -g -o $@ $^
+
+# Run QEMU locally
+.PHONY: run
+run: all
+	./run_qemu.sh
