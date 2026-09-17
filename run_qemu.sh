@@ -10,11 +10,10 @@ if [ ! -f "disk.img" ]; then
     dd if=/dev/zero of=disk.img bs=1M count=32
     mkfs.fat -F 32 disk.img
     # Use mcopy from mtools to put test files on it
-    echo "Hello from FAT32 Disk!" > test.txt
-    mcopy -i disk.img test.txt ::/
-    mcopy -i disk.img test.rsllink ::/
+    python3 generate_test_bmp.py
+    mcopy -i disk.img demo.rsllink ::/
+    mcopy -i disk.img player.rsl ::/
     mcopy -i disk.img test.bmp ::/
-    rm test.txt
 fi
 
 OVMF_PATH=""

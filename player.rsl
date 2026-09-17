@@ -1,0 +1,27 @@
+entity Player:
+    on create:
+        self.x = 0.5
+        self.y = 0.5
+        self.speed = 0.01
+        alarm[0] = 60
+
+    on step:
+        if key_down(KEY_RIGHT):
+            self.x = self.x + self.speed
+        if key_down(KEY_LEFT):
+            self.x = self.x - self.speed
+        if key_down(KEY_UP):
+            self.y = self.y - self.speed
+        if key_down(KEY_DOWN):
+            self.y = self.y + self.speed
+
+    on alarm(0):
+        alarm[0] = 60
+
+    on start draw:
+        clear(0x00000044)
+
+    # Missing on draw triggers draw_self()
+
+    on end draw:
+        draw_text_uv("RSL Engine Active", 0.05, 0.05, 0x00FFFFFF)

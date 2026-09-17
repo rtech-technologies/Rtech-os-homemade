@@ -1,0 +1,186 @@
+#include "lexer.h"
+
+static const char *src;
+static int pos = 0;
+static int line = 1;
+
+#define MAX_INDENT_STACK 32
+static int indent_stack[MAX_INDENT_STACK] = {0};
+static int indent_depth = 0;
+static int pending_dedents = 0;
+
+static bool is_alpha(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+static bool is_digit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+static bool is_alnum(char c) {
+    return is_alpha(c) || is_digit(c);
+}
+
+static char peek() { return src[pos]; }
+static char peek_next() { return src[pos] ? src[pos+1] : '\0'; }
+static char advance() { return src[pos++]; }
+
+static Token make_token(TokenType type, const char *start, int length) {
+    Token t;
+    t.type = type;
+    t.start = start;
+    t.length = length;
+    t.line = line;
+    return t;
+}
+
+static Token error_token(const char *msg) {
+    return make_token(TOK_ERROR, msg, 0); // length 0 for error message string
+}
+
+void lexer_init(const char *source) {
+    src = source;
+    pos = 0;
+    line = 1;
+    indent_depth = 0;
+    indent_stack[0] = 0;
+    pending_dedents = 0;
+}
+
+static void skip_whitespace() {
+    while (true) {
+        char c = peek();
+        if (c == ' ' || c == '\t' || c == '\r') {
+            advance();
+        } else if (c == '#') {
+            // comment goes to end of line
+            while (peek() != '\n' && peek() != '\0') advance();
+        } else {
+            break;
+        }
+    }
+}
+
+static bool check_keyword(const char *start, int length, const char *kw) {
+    int i = 0;
+    while(kw[i] && i < length) {
+        if (start[i] != kw[i]) return false;
+        i++;
+    }
+    return kw[i] == '\0' && i == length;
+}
+
+Token lexer_next_token(void) {
+    if (pending_dedents > 0) {
+        pending_dedents--;
+        return make_token(TOK_DEDENT, src+pos, 0);
+    }
+
+    skip_whitespace();
+
+    // Handle indentation at start of lines (newline tracking)
+    if (peek() == '\n') {
+        advance();
+        line++;
+        skip_whitespace();
+
+        // Count leading spaces for indentation (assume 4 spaces per indent for now)
+        int current_indent = 0;
+        while (peek() == ' ') {
+            advance();
+            current_indent++;
+        }
+
+        if (peek() == '\n') return lexer_next_token(); // skip blank lines
+        if (peek() == '\0') return make_token(TOK_EOF, src+pos, 0);
+
+        if (current_indent > indent_stack[indent_depth]) {
+            if (indent_depth >= MAX_INDENT_STACK - 1) return error_token("Too many indent levels");
+            indent_stack[++indent_depth] = current_indent;
+            return make_token(TOK_INDENT, src+pos, 0);
+        } else if (current_indent < indent_stack[indent_depth]) {
+            while (indent_depth > 0 && current_indent < indent_stack[indent_depth]) {
+                indent_depth--;
+                pending_dedents++;
+            }
+            if (current_indent != indent_stack[indent_depth]) {
+                return error_token("Inconsistent indentation");
+            }
+            pending_dedents--; // emit first one now
+            return make_token(TOK_DEDENT, src+pos, 0);
+        }
+
+        return make_token(TOK_NEWLINE, src+pos-1, 1);
+    }
+
+    if (peek() == '\0') {
+        if (indent_depth > 0) {
+            indent_depth--;
+            return make_token(TOK_DEDENT, src+pos, 0);
+        }
+        return make_token(TOK_EOF, src+pos, 0);
+    }
+
+    const char *start = src + pos;
+    char c = advance();
+
+    if (is_alpha(c)) {
+        while (is_alnum(peek())) advance();
+        int len = (src + pos) - start;
+
+        // Let's support multi-word events like "start draw" if we parse "on" first,
+        // but it's easier to tokenize words and let the parser handle "start" "draw".
+        // Keywords:
+        if (check_keyword(start, len, "entity")) return make_token(TOK_ENTITY, start, len);
+        if (check_keyword(start, len, "on")) return make_token(TOK_ON, start, len);
+        if (check_keyword(start, len, "if")) return make_token(TOK_IF, start, len);
+
+        return make_token(TOK_IDENTIFIER, start, len);
+    }
+
+    if (is_digit(c)) {
+        while (is_digit(peek()) || peek() == '.') advance(); // extremely basic float/int
+        return make_token(TOK_NUMBER, start, (src + pos) - start);
+    }
+
+    switch (c) {
+        case ':': return make_token(TOK_COLON, start, 1);
+        case '(': return make_token(TOK_LPAREN, start, 1);
+        case ')': return make_token(TOK_RPAREN, start, 1);
+        case '[': return make_token(TOK_LBRACKET, start, 1);
+        case ']': return make_token(TOK_RBRACKET, start, 1);
+        case '=': return make_token(TOK_ASSIGN, start, 1);
+        case '+': return make_token(TOK_PLUS, start, 1);
+        case '-': return make_token(TOK_MINUS, start, 1);
+        case '.': return make_token(TOK_DOT, start, 1);
+        case ',': return make_token(TOK_COMMA, start, 1);
+    }
+
+    return error_token("Unexpected character");
+}
+
+const char* token_type_name(TokenType type) {
+    switch(type) {
+        case TOK_EOF: return "EOF";
+        case TOK_IDENTIFIER: return "IDENT";
+        case TOK_NUMBER: return "NUMBER";
+        case TOK_ENTITY: return "ENTITY";
+        case TOK_ON: return "ON";
+        case TOK_IF: return "IF";
+        case TOK_COLON: return "COLON";
+        case TOK_LPAREN: return "LPAREN";
+        case TOK_RPAREN: return "RPAREN";
+        case TOK_LBRACKET: return "LBRACKET";
+        case TOK_RBRACKET: return "RBRACKET";
+        case TOK_ASSIGN: return "ASSIGN";
+        case TOK_PLUS: return "PLUS";
+        case TOK_MINUS: return "MINUS";
+        case TOK_DOT: return "DOT";
+        case TOK_COMMA: return "COMMA";
+        case TOK_NEWLINE: return "NEWLINE";
+        case TOK_INDENT: return "INDENT";
+        case TOK_DEDENT: return "DEDENT";
+        case TOK_ERROR: return "ERROR";
+        default: return "UNKNOWN";
+    }
+}

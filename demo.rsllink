@@ -1,0 +1,10 @@
+{
+  "name": "RSL-Demo",
+  "screen_width": 800,
+  "screen_height": 600,
+  "entry_entity": "Player",
+  "entities": ["player.rsl"],
+  "assets": {
+    "spr_player": "test.bmp"
+  }
+}

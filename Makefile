@@ -11,7 +11,7 @@ CPPFLAGS := -Ikernel
 
 LDFLAGS := -nostdlib -pie -z text -z max-page-size=0x1000 -T kernel/linker.ld
 
-KERNEL_SRC := $(wildcard kernel/*.c) $(wildcard drivers/storage/*.c) $(wildcard fs/*.c) runtime/rsllinker.c runtime/bmp_loader.c
+KERNEL_SRC := $(wildcard kernel/*.c) $(wildcard drivers/storage/*.c) $(wildcard fs/*.c) $(wildcard runtime/*.c) $(wildcard compiler/*.c) $(wildcard vm/*.c)
 KERNEL_OBJ := $(KERNEL_SRC:.c=.o)
 KERNEL_BIN := build/kernel.elf
 ISO_IMAGE  := build/rsl-os.iso
@@ -59,12 +59,16 @@ clean:
 
 # Host Tests Target
 .PHONY: test
-test: tests/test_rsllinker tests/test_bmp
+test: tests/test_rsllinker tests/test_bmp tests/test_rsl_compiler
 	./tests/test_rsllinker
 	./tests/test_bmp
+	./tests/test_rsl_compiler
 
 tests/test_rsllinker: tests/test_rsllinker.c runtime/rsllinker.c
 	gcc -Wall -Wextra -g -o $@ tests/test_rsllinker.c runtime/rsllinker.c
 
 tests/test_bmp: tests/test_bmp.c runtime/bmp_loader.c
 	gcc -Wall -Wextra -g -o $@ tests/test_bmp.c runtime/bmp_loader.c
+
+tests/test_rsl_compiler: tests/test_rsl_compiler.c compiler/parser.c compiler/lexer.c
+	gcc -Wall -Wextra -g -o $@ $^
