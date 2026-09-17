@@ -11,7 +11,7 @@ CPPFLAGS := -Ikernel
 
 LDFLAGS := -nostdlib -pie -z text -z max-page-size=0x1000 -T kernel/linker.ld
 
-KERNEL_SRC := $(wildcard kernel/*.c)
+KERNEL_SRC := $(wildcard kernel/*.c) $(wildcard drivers/storage/*.c) $(wildcard fs/*.c)
 KERNEL_OBJ := $(KERNEL_SRC:.c=.o)
 KERNEL_BIN := build/kernel.elf
 ISO_IMAGE  := build/rsl-os.iso

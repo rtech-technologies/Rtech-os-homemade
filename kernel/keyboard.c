@@ -62,3 +62,28 @@ bool is_key_down(uint8_t scancode) {
 bool is_key_pressed(uint8_t scancode) {
     return key_pressed[scancode];
 }
+
+// Basic US QWERTY mapping for Set 1 Make codes
+// Excludes shift states for simplicity in this demo phase
+static const char scancode_to_ascii[128] = {
+    0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
+    '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
+    0, /* Ctrl */ 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
+    0, /* LShift */ '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0, /* RShift */
+    '*', 0, /* Alt */ ' ', 0, /* Caps */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* F1-F10 */
+    0, 0, /* Num/Scroll Lock */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, /* Home, Up, PgUp, -, Left, 5, Right, +, End */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
+char keyboard_getchar(void) {
+    // We can just iterate the key_pressed array to find what character was pressed this frame
+    for (int i = 0; i < 128; i++) {
+        if (key_pressed[i]) {
+            return scancode_to_ascii[i];
+        }
+    }
+    return 0;
+}

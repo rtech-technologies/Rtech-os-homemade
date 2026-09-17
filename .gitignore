@@ -4,3 +4,4 @@ limine-bin/
 *.elf
 *.iso
 .cache/
+disk.img
