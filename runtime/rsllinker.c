@@ -3,15 +3,13 @@
 #include "jsmn.h"
 
 #include "rsllinker.h"
+#include "../kernel/util.h"
 
-// Basic memory utilities since we are in a freestanding environment without string.h
 static void string_copy(char *dest, const char *src, int len) {
     if (len >= MAX_STRING_LEN) {
         len = MAX_STRING_LEN - 1;
     }
-    for (int i = 0; i < len; i++) {
-        dest[i] = src[i];
-    }
+    memcpy(dest, src, len);
     dest[len] = '\0';
 }
 
@@ -21,15 +19,11 @@ static bool string_equals(const char *json, jsmntok_t *tok, const char *str) {
     int len = tok->end - tok->start;
     const char *s = json + tok->start;
 
-    int str_len = 0;
-    while(str[str_len]) str_len++;
+    int str_len = strlen(str);
 
     if (len != str_len) return false;
 
-    for (int i = 0; i < len; i++) {
-        if (s[i] != str[i]) return false;
-    }
-    return true;
+    return memcmp(s, str, len) == 0;
 }
 
 static uint32_t string_to_uint(const char *json, jsmntok_t *tok) {

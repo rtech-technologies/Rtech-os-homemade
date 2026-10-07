@@ -1,19 +1,13 @@
 #include "framebuffer.h"
 #include "font.h"
 #include <stddef.h>
+#include "memory.h"
 
 static struct limine_framebuffer *g_fb = NULL;
 uint32_t *backbuffer = NULL;
 uint64_t fb_width = 0;
 uint64_t fb_height = 0;
 static uint64_t fb_pitch = 0;
-
-// Since we have no malloc yet, we will place the backbuffer in a statically allocated BSS section.
-// A common resolution is 1920x1080. We'll allocate enough for 4K just to be safe.
-// 3840 * 2160 * 4 bytes = ~33 MB.
-#define MAX_FB_WIDTH 3840
-#define MAX_FB_HEIGHT 2160
-static uint32_t g_backbuffer[MAX_FB_WIDTH * MAX_FB_HEIGHT];
 
 void init_framebuffer(struct limine_framebuffer *fb) {
     if (!fb) return;
@@ -22,7 +16,8 @@ void init_framebuffer(struct limine_framebuffer *fb) {
     fb_height = fb->height;
     fb_pitch = fb->pitch; // in bytes
 
-    backbuffer = g_backbuffer;
+    // Dynamically allocate the backbuffer memory instead of polluting BSS
+    backbuffer = (uint32_t *)kmalloc(fb_width * fb_height * sizeof(uint32_t));
 }
 
 void clear(uint32_t color) {

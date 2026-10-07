@@ -118,6 +118,132 @@ static void pmm_free_pages(void *ptr, size_t num_pages) {
     }
 }
 
+// ----- Real kmalloc Allocator -----
+// A basic linked-list free-block coalescing allocator
+typedef struct KMemBlock {
+    size_t size;
+    int free;
+    struct KMemBlock *next;
+} KMemBlock;
+
+#define KBLOCK_SIZE sizeof(KMemBlock)
+static void *kheap_start = NULL;
+static void *kheap_end = NULL;
+static KMemBlock *kfree_list = NULL;
+
+// Request more memory from PMM for the heap
+static KMemBlock *request_space(KMemBlock *last, size_t size) {
+    // Round up size to page boundary
+    size_t pages = (size + KBLOCK_SIZE + PAGE_SIZE - 1) / PAGE_SIZE;
+    void *request = pmm_alloc_pages(pages);
+    if (!request) return NULL;
+
+    KMemBlock *block = (KMemBlock *)request;
+    block->size = pages * PAGE_SIZE - KBLOCK_SIZE;
+    block->free = 0;
+    block->next = NULL;
+
+    if (last) {
+        last->next = block;
+    }
+    return block;
+}
+
+void *kmalloc(size_t size) {
+    if (size == 0) return NULL;
+
+    // Align to 8 bytes
+    if (size % 8 != 0) {
+        size += 8 - (size % 8);
+    }
+
+    if (!kheap_start) {
+        KMemBlock *block = request_space(NULL, size);
+        if (!block) return NULL;
+        kfree_list = block;
+        kheap_start = block;
+        return (void *)(block + 1);
+    }
+
+    KMemBlock *current = kfree_list;
+    KMemBlock *last = kfree_list;
+    while (current) {
+        if (current->free && current->size >= size) {
+            // Split block if it's large enough
+            if (current->size >= size + KBLOCK_SIZE + 8) {
+                KMemBlock *new_block = (KMemBlock *)((uint8_t *)(current + 1) + size);
+                new_block->size = current->size - size - KBLOCK_SIZE;
+                new_block->free = 1;
+                new_block->next = current->next;
+
+                current->size = size;
+                current->next = new_block;
+            }
+            current->free = 0;
+            return (void *)(current + 1);
+        }
+        last = current;
+        current = current->next;
+    }
+
+    // Request more space
+    KMemBlock *block = request_space(last, size);
+    if (!block) return NULL;
+    return (void *)(block + 1);
+}
+
+void kfree(void *ptr) {
+    if (!ptr) return;
+
+    KMemBlock *block = (KMemBlock *)ptr - 1;
+    block->free = 1;
+
+    // Coalescing: Only merge if adjacent in memory
+    KMemBlock *current = kfree_list;
+    while (current && current->next) {
+        if (current->free && current->next->free) {
+            uint8_t *expected_next_addr = (uint8_t *)current + KBLOCK_SIZE + current->size;
+            if (expected_next_addr == (uint8_t *)current->next) {
+                current->size += KBLOCK_SIZE + current->next->size;
+                current->next = current->next->next;
+                continue; // Recheck in case we can merge 3+ blocks
+            }
+        }
+        current = current->next;
+    }
+}
+
+void *kcalloc(size_t num, size_t size) {
+    size_t total = num * size;
+    void *ptr = kmalloc(total);
+    if (ptr) {
+        uint8_t *p = (uint8_t *)ptr;
+        for (size_t i = 0; i < total; i++) p[i] = 0;
+    }
+    return ptr;
+}
+
+void *krealloc(void *ptr, size_t new_size) {
+    if (!ptr) return kmalloc(new_size);
+    if (new_size == 0) {
+        kfree(ptr);
+        return NULL;
+    }
+
+    KMemBlock *block = (KMemBlock *)ptr - 1;
+    if (block->size >= new_size) return ptr;
+
+    void *new_ptr = kmalloc(new_size);
+    if (!new_ptr) return NULL;
+
+    uint8_t *src = (uint8_t *)ptr;
+    uint8_t *dst = (uint8_t *)new_ptr;
+    for (size_t i = 0; i < block->size; i++) dst[i] = src[i];
+
+    kfree(ptr);
+    return new_ptr;
+}
+
 // ----- App Arena Allocator -----
 
 struct ArenaBlock {

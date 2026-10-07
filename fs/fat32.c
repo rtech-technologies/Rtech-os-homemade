@@ -1,5 +1,7 @@
 #include "fat32.h"
 #include "../drivers/storage/ahci.h"
+#include "../kernel/util.h"
+#include <stddef.h>
 
 // Basic implementation of FAT32 reading over AHCI
 // For simplicity in this demo, we assume the filesystem starts at LBA 0 (no MBR partition table)
@@ -63,18 +65,8 @@ static uint8_t sector_buf[512] __attribute__((aligned(16)));
 
 static uint32_t partition_start_lba = 0;
 
-static int string_compare(const char *s1, const char *s2, int n) {
-    for (int i=0; i<n; i++) {
-        if (s1[i] != s2[i]) return 0;
-        if (s1[i] == '\0') break;
-    }
-    return 1;
-}
-
-static int string_length(const char *s) {
-    int len = 0;
-    while(s[len]) len++;
-    return len;
+static int string_compare_n(const char *s1, const char *s2, int n) {
+    return memcmp(s1, s2, n) == 0;
 }
 
 void init_fat32(void) {
@@ -145,7 +137,7 @@ static bool find_file(const char *path, fat32_dir_entry_t *out_entry) {
             if (dir[i].attr & 0x08) continue; // Volume label
             if ((dir[i].attr & 0x0F) == 0x0F) continue; // LFN
 
-            if (string_compare((const char*)dir[i].name, fat_name, 11)) {
+            if (string_compare_n((const char*)dir[i].name, fat_name, 11)) {
                 *out_entry = dir[i];
                 return true;
             }
