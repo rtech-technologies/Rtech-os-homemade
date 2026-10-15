@@ -1,0 +1,7 @@
+build/
+limine-bin/
+*.o
+*.elf
+*.iso
+.cache/
+disk.img
