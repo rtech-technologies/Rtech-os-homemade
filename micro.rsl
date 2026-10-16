@@ -1,0 +1,46 @@
+# micro.rsl - The RSL Userland Text Editor
+
+# Clear screen and draw header
+:start_edit
+cls
+echo MICRO EDITOR v1.0
+echo -------------------
+# Load the target file content into global buffer if passed, otherwise empty string
+if buffer == "" goto create_buffer
+goto display
+
+:create_buffer
+let buffer = ""
+
+:display
+echo buffer
+echo -------------------
+echo Press ESC (scancode -23) to save/exit, or type.
+
+:wait_input
+waitkey k
+if k == "" goto wait_input
+
+# Check if ESC was pressed (we map ESC scancode 23 to string "-23" in waitkey)
+if k == "-23" goto save
+
+# Check if Backspace was pressed
+if k == "-14" goto backspace
+# ASCII Backspace/DEL
+if k == "8" goto backspace
+if k == "127" goto backspace
+
+# Append character to buffer
+str_append buffer k
+goto start_edit
+
+:backspace
+str_backspace buffer
+goto start_edit
+
+:save
+cls
+echo Enter filename to save:
+# In a real shell we'd have a prompt wait loop, we'll hardcode saving to "out.txt" for this demo
+writefile out.txt buffer
+echo File saved to out.txt

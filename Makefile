@@ -2,7 +2,7 @@ CC       = x86_64-w64-mingw32-gcc
 
 CFLAGS   = -ffreestanding -fno-stack-protector -fno-builtin \
            -fno-asynchronous-unwind-tables -fno-unwind-tables \
-           -mno-red-zone -Wall -Wextra
+           -mno-red-zone -Wall -Wextra -mno-stack-arg-probe
 
 TARGET      = build/BOOTX64.EFI
 OBJ         = build/main.o
@@ -64,6 +64,7 @@ $(ISO): $(TARGET)
 	mcopy -i "$(IMG_TMP)" "$(TARGET)" ::/EFI/BOOT/BOOTX64.EFI
 	mcopy -i "$(IMG_TMP)" "$(STARTUP_RSL)" ::/startup.rsl
 	mcopy -i "$(IMG_TMP)" "chell_ap.cfg" ::/chell_ap.cfg
+	mcopy -i "$(IMG_TMP)" "micro.rsl" ::/micro.rsl
 
 	@if [ -d "$(INCLUDE_DIR)" ] && \
 	    [ -n "$$(find "$(INCLUDE_DIR)" -mindepth 1 -print -quit)" ]; then \
@@ -97,6 +98,7 @@ run: $(ISO)
 		-device qemu-xhci,id=xhci \
 		-device usb-storage,drive=usbdisk,bus=xhci.0 \
 		-device usb-kbd,bus=xhci.0 \
+
 		-m 256M \
 		-serial file:build/serial.log
 

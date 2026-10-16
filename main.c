@@ -17,6 +17,9 @@ typedef void *EFI_HANDLE;
 #define HISTORY_SIZE 16
 #define MAX_VARS 32
 
+#define TERM_ROWS 18
+#define TERM_COLS 76
+
 typedef struct {
     UINTN Signature;
     unsigned int Revision;
@@ -125,7 +128,12 @@ struct _EFI_FILE_PROTOCOL {
     void *GetPosition;
     void *SetPosition;
     void *GetInfo;
-    void *SetInfo;
+    EFI_STATUS (*SetInfo)(
+        EFI_FILE_PROTOCOL *This,
+        EFI_GUID *InformationType,
+        UINTN BufferSize,
+        void *Buffer
+    );
     void *Flush;
 };
 
@@ -220,7 +228,9 @@ typedef struct {
 
 typedef struct {
     char name[32];
-    int value;
+    int type; // 0 = int, 1 = string
+    int value_int;
+    char value_str[4096];
 } Variable;
 
 typedef struct {
@@ -247,6 +257,9 @@ static int history_index = -1;
 static Variable g_vars[MAX_VARS];
 static int g_var_count = 0;
 
+static char term_buffer[TERM_ROWS][TERM_COLS];
+static int term_cursor_y = 0;
+
 typedef struct {
     char alias[32];
     char target[32];
@@ -258,6 +271,11 @@ static int g_alias_count = 0;
 
 static const EFI_GUID EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID = {
     0x964e5b22, 0x6459, 0x11d2,
+    {0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b}
+};
+
+static const EFI_GUID EFI_FILE_INFO_ID = {
+    0x09576e92, 0x6d3f, 0x11d2,
     {0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b}
 };
 
@@ -310,6 +328,35 @@ static void draw_text(int x, int y, const char *str) {
     g_st->ConOut->OutputString(g_st->ConOut, buffer);
 }
 
+static void draw_header(void);
+
+static void redraw_term(void) {
+    room_clear();
+    draw_header();
+    for (int i = 0; i <= term_cursor_y; i++) {
+        draw_text(2, 5 + i, term_buffer[i]);
+    }
+}
+
+static void print_line(const char *str) {
+    if (term_cursor_y >= TERM_ROWS - 1) {
+        // Scroll up
+        for (int i = 0; i < TERM_ROWS - 1; i++) {
+            for (int j = 0; j < TERM_COLS; j++) {
+                term_buffer[i][j] = term_buffer[i+1][j];
+            }
+        }
+    } else {
+        term_cursor_y++;
+    }
+
+    int i = 0;
+    while (str[i] && i < TERM_COLS - 1) { term_buffer[term_cursor_y][i] = str[i]; i++; }
+    term_buffer[term_cursor_y][i] = '\0';
+    app.row = 5 + term_cursor_y + 1; // Put prompt below the last line
+    redraw_term();
+}
+
 static int get_input_key(EFI_INPUT_KEY *key) {
     if (g_st == NULL || g_st->ConIn == NULL || g_st->ConIn->ReadKeyStroke == NULL) {
         return 0;
@@ -339,15 +386,23 @@ static void draw_header(void) {
 
 static int get_var(const char *name) {
     for (int i = 0; i < g_var_count; i++) {
-        if (string_compare(g_vars[i].name, name) == 0) return g_vars[i].value;
+        if (string_compare(g_vars[i].name, name) == 0) return g_vars[i].value_int;
     }
     return 0;
+}
+
+static const char* get_var_str(const char *name) {
+    for (int i = 0; i < g_var_count; i++) {
+        if (string_compare(g_vars[i].name, name) == 0) return g_vars[i].value_str;
+    }
+    return "";
 }
 
 static void set_var(const char *name, int val) {
     for (int i = 0; i < g_var_count; i++) {
         if (string_compare(g_vars[i].name, name) == 0) {
-            g_vars[i].value = val;
+            g_vars[i].type = 0;
+            g_vars[i].value_int = val;
             return;
         }
     }
@@ -355,7 +410,30 @@ static void set_var(const char *name, int val) {
         int i = 0;
         while (name[i] != '\0' && i < 31) { g_vars[g_var_count].name[i] = name[i]; i++; }
         g_vars[g_var_count].name[i] = '\0';
-        g_vars[g_var_count].value = val;
+        g_vars[g_var_count].type = 0;
+        g_vars[g_var_count].value_int = val;
+        g_var_count++;
+    }
+}
+
+static void set_var_str(const char *name, const char *val) {
+    for (int i = 0; i < g_var_count; i++) {
+        if (string_compare(g_vars[i].name, name) == 0) {
+            g_vars[i].type = 1;
+            int j = 0;
+            while (val[j] && j < 4095) { g_vars[i].value_str[j] = val[j]; j++; }
+            g_vars[i].value_str[j] = '\0';
+            return;
+        }
+    }
+    if (g_var_count < MAX_VARS) {
+        int i = 0;
+        while (name[i] != '\0' && i < 31) { g_vars[g_var_count].name[i] = name[i]; i++; }
+        g_vars[g_var_count].name[i] = '\0';
+        g_vars[g_var_count].type = 1;
+        int j = 0;
+        while (val[j] && j < 4095) { g_vars[g_var_count].value_str[j] = val[j]; j++; }
+        g_vars[g_var_count].value_str[j] = '\0';
         g_var_count++;
     }
 }
@@ -552,7 +630,7 @@ static void check_startup_script(void) {
     EFI_STATUS status = root->Open(root, &script_file, efi_path, EFI_FILE_MODE_READ, 0);
     if (status == EFI_SUCCESS && script_file != NULL) {
         script_file->Close(script_file);
-        draw_text(2, app.row++, "Running startup.rsl...");
+        print_line("Running startup.rsl...");
         command_chell("startup.rsl");
     }
 }
@@ -606,38 +684,38 @@ static void enumerate_volumes(void) {
 
 static void select_volume(const char *arg) {
     if (arg[0] != 'D' || arg[1] < '0' || arg[1] > '9' || arg[2] != ':' || arg[3] != '\0') {
-        draw_text(2, app.row++, "Usage: mount D0: or ldsk D0:");
+        print_line("Usage: mount D0: or ldsk D0:");
         return;
     }
     UINTN index = (UINTN)(arg[1] - '0');
     if (index >= g_volume_count) {
-        draw_text(2, app.row++, "Volume not found.");
+        print_line("Volume not found.");
         return;
     }
     g_selected_volume = index;
-    draw_text(2, app.row++, "Volume selected.");
+    print_line("Volume selected.");
 }
 
 /* ---------- Command Implementations ---------- */
 
 static void command_help(void) {
-    draw_text(2, app.row++, "Available Commands:");
-    draw_text(2, app.row++, "  help, about, uname, pwd, cd, ls");
-    draw_text(2, app.row++, "  mkdir, rmdir, touch, mount, ldsk");
-    draw_text(2, app.row++, "  chell, let, calc, clear, echo, cat, exit, q");
-
+    print_line("Available Commands:");
+    print_line("  help, about, uname, pwd, cd, ls, ll");
+    print_line("  mkdir, rmdir, rm, cp, mv, touch");
+    print_line("  mount, ldsk, chell, let, calc");
+    print_line("  clear, echo, cat, exit, q");
 }
 
 static void command_pwd(void) {
     if (app.cwd[0] == '\0') {
-        draw_text(2, app.row++, "/");
+        print_line("/");
     } else {
-        draw_text(2, app.row++, app.cwd);
+        print_line(app.cwd);
     }
 }
 
 static void command_uname(void) {
-    draw_text(2, app.row++, "MyOS x86_64 Freestanding UEFI v1.0");
+    print_line("MyOS x86_64 Freestanding UEFI v1.0");
 }
 
 static void command_mount(const char *arg) {
@@ -645,9 +723,9 @@ static void command_mount(const char *arg) {
         if (g_volume_count == 0) {
             enumerate_volumes();
         }
-        draw_text(2, app.row++, "Mounted volumes:");
+        print_line("Mounted volumes:");
         if (g_volume_count == 0) {
-            draw_text(4, app.row++, "None found.");
+            print_line("  None found.");
             return;
         }
         for (UINTN i = 0; i < g_volume_count; i++) {
@@ -658,9 +736,14 @@ static void command_mount(const char *arg) {
             line[3] = ':';
             line[4] = ' ';
             line[5] = (i == g_selected_volume) ? '*' : ' ';
-            line[6] = '\0';
-            draw_text(2, app.row, line);
-            draw_text(10, app.row++, (i == g_selected_volume) ? "[Active]" : "[Available]");
+            line[6] = ' ';
+            line[7] = '\0';
+
+            char *status_str = (i == g_selected_volume) ? "[Active]" : "[Available]";
+            int j = 0;
+            while(status_str[j]) { line[7+j] = status_str[j]; j++; }
+            line[7+j] = '\0';
+            print_line(line);
         }
     } else {
         select_volume(arg);
@@ -669,18 +752,18 @@ static void command_mount(const char *arg) {
 
 static void command_cd(const char *path) {
     if (*path == '\0') {
-        draw_text(2, app.row++, "Usage: cd <path>");
+        print_line("Usage: cd <path>");
         return;
     }
 
     if (g_volume_count == 0) {
-        draw_text(2, app.row++, "No volumes mounted. Run 'mount' or 'ldsk' first.");
+        print_line("No volumes mounted. Run 'mount' or 'ldsk' first.");
         return;
     }
 
     if (string_compare(path, "/") == 0 || string_compare(path, "\\") == 0) {
         app.cwd[0] = '\0';
-        draw_text(2, app.row++, "Directory changed to root (/)");
+        print_line("Directory changed to root (/)");
         return;
     }
 
@@ -698,15 +781,15 @@ static void command_cd(const char *path) {
             j++;
         }
         app.cwd[j] = '\0';
-        draw_text(2, app.row++, "Directory changed.");
+        print_line("Directory changed.");
     } else {
-        draw_text(2, app.row++, "Directory not found.");
+        print_line("Directory not found.");
     }
 }
 
-static void command_ls(void) {
+static void command_ls(int long_format) {
     if (g_volume_count == 0) {
-        draw_text(2, app.row++, "No volumes mounted. Run 'mount' or 'ldsk' first.");
+        print_line("No volumes mounted. Run 'mount' or 'ldsk' first.");
         return;
     }
 
@@ -716,7 +799,7 @@ static void command_ls(void) {
 
     EFI_STATUS status = root->Open(root, &dir, efi_path, EFI_FILE_MODE_READ, EFI_FILE_DIRECTORY);
     if (status != EFI_SUCCESS || dir == NULL) {
-        draw_text(2, app.row++, "Failed to open directory.");
+        print_line("Failed to open directory.");
         return;
     }
 
@@ -738,16 +821,21 @@ static void command_ls(void) {
         name_buf[k] = '\0';
 
         if (info->Attribute & EFI_FILE_DIRECTORY) {
-            draw_text(2, app.row, name_buf);
-            draw_text(2 + (int)k, app.row, "/");
-            app.row++;
-        } else {
-            draw_text(2, app.row++, name_buf);
+            name_buf[k] = '/';
+            name_buf[k+1] = '\0';
         }
 
-        if (app.row > 22) {
-            draw_text(2, app.row++, "-- More --");
-            break;
+        if (long_format) {
+            char line_out[256];
+            int_to_str(info->FileSize, line_out);
+            int sz_len = 0; while(line_out[sz_len]) sz_len++;
+            line_out[sz_len++] = ' '; line_out[sz_len++] = 'B'; line_out[sz_len++] = ' ';
+
+            for(UINTN j=0; j<k+2; j++) line_out[sz_len+j] = name_buf[j];
+
+            print_line(line_out);
+        } else {
+            print_line(name_buf);
         }
     }
     dir->Close(dir);
@@ -755,12 +843,12 @@ static void command_ls(void) {
 
 static void command_mkdir(const char *path) {
     if (*path == '\0') {
-        draw_text(2, app.row++, "Usage: mkdir <dirname>");
+        print_line("Usage: mkdir <dirname>");
         return;
     }
 
     if (g_volume_count == 0) {
-        draw_text(2, app.row++, "No volumes mounted. Run 'mount' or 'ldsk' first.");
+        print_line("No volumes mounted. Run 'mount' or 'ldsk' first.");
         return;
     }
 
@@ -778,20 +866,20 @@ static void command_mkdir(const char *path) {
 
     if (status == EFI_SUCCESS && new_dir != NULL) {
         new_dir->Close(new_dir);
-        draw_text(2, app.row++, "Directory created.");
+        print_line("Directory created.");
     } else {
-        draw_text(2, app.row++, "Failed to create directory.");
+        print_line("Failed to create directory.");
     }
 }
 
 static void command_rmdir(const char *path) {
     if (*path == '\0') {
-        draw_text(2, app.row++, "Usage: rmdir <path>");
+        print_line("Usage: rmdir <path>");
         return;
     }
 
     if (g_volume_count == 0) {
-        draw_text(2, app.row++, "No volumes mounted. Run 'mount' or 'ldsk' first.");
+        print_line("No volumes mounted. Run 'mount' or 'ldsk' first.");
         return;
     }
 
@@ -803,24 +891,24 @@ static void command_rmdir(const char *path) {
     if (status == EFI_SUCCESS && target != NULL) {
         status = target->Delete(target);
         if (status == EFI_SUCCESS) {
-            draw_text(2, app.row++, "Directory/File removed.");
+            print_line("Removed.");
         } else {
             target->Close(target);
-            draw_text(2, app.row++, "Failed to remove (might not be empty).");
+            print_line("Failed to remove (might not be empty).");
         }
     } else {
-        draw_text(2, app.row++, "Directory not found.");
+        print_line("File/Directory not found.");
     }
 }
 
 static void command_touch(const char *args) {
     if (*args == '\0') {
-        draw_text(2, app.row++, "Usage: touch <filename> [content]");
+        print_line("Usage: touch <filename> [content]");
         return;
     }
 
     if (g_volume_count == 0) {
-        draw_text(2, app.row++, "No volumes mounted. Run 'mount' or 'ldsk' first.");
+        print_line("No volumes mounted. Run 'mount' or 'ldsk' first.");
         return;
     }
 
@@ -864,20 +952,19 @@ static void command_touch(const char *args) {
             status = file->Write(file, &w_len, write_buf);
         }
         file->Close(file);
-        draw_text(2, app.row++, "File created/written.");
+        print_line("File created/written.");
     } else {
-        draw_text(2, app.row++, "Failed to create file.");
+        print_line("Failed to create file.");
     }
 }
-
 static void command_cat(const char *path) {
     if (*path == '\0') {
-        draw_text(2, app.row++, "Usage: cat <path>");
+        print_line("Usage: cat <path>");
         return;
     }
 
     if (g_volume_count == 0) {
-        draw_text(2, app.row++, "No volumes mounted. Run 'mount' or 'ldsk' first.");
+        print_line("No volumes mounted. Run 'mount' or 'ldsk' first.");
         return;
     }
 
@@ -906,38 +993,89 @@ static void command_cat(const char *path) {
             if (c == '\r') continue;
             if (c == '\n') {
                 line[line_length] = '\0';
-                draw_text(2, app.row++, line);
+                print_line(line);
                 line_length = 0;
-                if (app.row > 22) {
-                    draw_text(2, app.row++, "Output stopped at screen limit.");
-                    file->Close(file);
-                    return;
-                }
             } else {
                 line[line_length++] = (c >= 32 && c <= 126) ? (char)c : '.';
             }
         }
-        if (app.row > 22) {
-            draw_text(2, app.row++, "Output stopped at screen limit.");
-            file->Close(file);
-            return;
-        }
         if (line_length > 0) {
             line[line_length] = '\0';
-            draw_text(2, app.row++, line);
-            if (app.row > 22) {
-                draw_text(2, app.row++, "Output stopped at screen limit.");
-                file->Close(file);
-                return;
-            }
+            print_line(line);
         }
     }
     file->Close(file);
 }
 
+static void command_rm(const char *path) {
+    // rm is just rmdir in this basic EFI implementation since Delete() handles both
+    command_rmdir(path);
+}
+
+static void command_cp(const char *args) {
+    char src[128], dst[128];
+    int idx = 0, s_idx = 0, d_idx = 0;
+    while (args[idx] && args[idx] != ' ' && s_idx < 127) src[s_idx++] = args[idx++];
+    src[s_idx] = '\0';
+    while (args[idx] == ' ') idx++;
+    while (args[idx] && d_idx < 127) dst[d_idx++] = args[idx++];
+    dst[d_idx] = '\0';
+
+    if (src[0] == '\0' || dst[0] == '\0') {
+        print_line("Usage: cp <source> <dest>");
+        return;
+    }
+
+    if (g_volume_count == 0) {
+        print_line("No volumes mounted.");
+        return;
+    }
+
+    CHAR16 efi_src[FILE_PATH_CAPACITY], efi_dst[FILE_PATH_CAPACITY];
+    EFI_FILE_PROTOCOL *root = resolve_path(src, efi_src, sizeof(efi_src)/sizeof(CHAR16));
+    EFI_FILE_PROTOCOL *s_file = NULL, *d_file = NULL;
+
+    EFI_STATUS st = root->Open(root, &s_file, efi_src, EFI_FILE_MODE_READ, 0);
+    if (st != EFI_SUCCESS) { print_line("Source not found."); return; }
+
+    resolve_path(dst, efi_dst, sizeof(efi_dst)/sizeof(CHAR16));
+    st = root->Open(root, &d_file, efi_dst, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, 0);
+    if (st != EFI_SUCCESS) { s_file->Close(s_file); print_line("Failed to create dest."); return; }
+
+    unsigned char buf[512];
+    for(;;) {
+        UINTN sz = sizeof(buf);
+        st = s_file->Read(s_file, &sz, buf);
+        if (st != EFI_SUCCESS || sz == 0) break;
+        d_file->Write(d_file, &sz, buf);
+    }
+    s_file->Close(s_file);
+    d_file->Close(d_file);
+    print_line("Copied.");
+}
+
+static void command_mv(const char *args) {
+    char src[128], dst[128];
+    int idx = 0, s_idx = 0, d_idx = 0;
+    while (args[idx] && args[idx] != ' ' && s_idx < 127) src[s_idx++] = args[idx++];
+    src[s_idx] = '\0';
+    while (args[idx] == ' ') idx++;
+    while (args[idx] && d_idx < 127) dst[d_idx++] = args[idx++];
+    dst[d_idx] = '\0';
+
+    if (src[0] == '\0' || dst[0] == '\0') {
+        print_line("Usage: mv <source> <dest>");
+        return;
+    }
+
+    // Simplest way to move across dirs in simple EFI is cp then rm
+    command_cp(args);
+    command_rm(src);
+}
+
 static void command_let(const char *args) {
     if (*args == '\0') {
-        draw_text(2, app.row++, "Usage: let <var_name> = <expression>");
+        print_line("Usage: let <var_name> = <expression>");
         return;
     }
 
@@ -953,7 +1091,7 @@ static void command_let(const char *args) {
     while (*p == ' ' || *p == '=') p++;
 
     if (*p == '\0') {
-        draw_text(2, app.row++, "Usage: let <var_name> = <expression>");
+        print_line("Usage: let <var_name> = <expression>");
         return;
     }
 
@@ -974,7 +1112,7 @@ static void command_let(const char *args) {
     while (num_buf[k] != '\0' && m_idx < 62) msg[m_idx++] = num_buf[k++];
     msg[m_idx] = '\0';
 
-    draw_text(2, app.row++, msg);
+    print_line(msg);
 }
 static void autocomplete_command(void) {
     static const char *commands[] = {
@@ -1027,82 +1165,136 @@ static void autocomplete_command(void) {
 
 static void command_calc(const char *expr) {
     if (*expr == '\0') {
-        draw_text(2, app.row++, "Usage: calc <expression>");
+        print_line("Usage: calc <expression>");
         return;
     }
     int res = eval_expression(expr);
     char buf[32];
     int_to_str(res, buf);
-    draw_text(2, app.row++, buf);
+    print_line(buf);
 }
 
 /* ---------- RSL Script Engine (`chell`) ---------- */
 
 static void command_chell(const char *path) {
     if (*path == '\0') {
-        draw_text(2, app.row++, "Usage: chell <script.rsl>");
+        print_line("Usage: chell <script.rsl>");
         return;
     }
 
-    int len = 0;
-    while (path[len] != '\0') len++;
-    if (len < 4 || path[len-4] != '.' ||
-        (path[len-3] != 'r' && path[len-3] != 'R') ||
-        (path[len-2] != 's' && path[len-2] != 'S') ||
-        (path[len-1] != 'l' && path[len-1] != 'L')) {
-        draw_text(2, app.row++, "Error: Only .rsl script files can be executed.");
-    return;
-        }
+    if (g_volume_count == 0) {
+        print_line("No volumes mounted.");
+        return;
+    }
 
-        if (g_volume_count == 0) {
-            draw_text(2, app.row++, "No volumes mounted. Run 'mount' or 'ldsk' first.");
-            return;
-        }
+    CHAR16 efi_path[FILE_PATH_CAPACITY];
+    EFI_FILE_PROTOCOL *root = resolve_path(path, efi_path, sizeof(efi_path) / sizeof(CHAR16));
+    EFI_FILE_PROTOCOL *file = NULL;
 
-        CHAR16 efi_path[FILE_PATH_CAPACITY];
-        EFI_FILE_PROTOCOL *root = resolve_path(path, efi_path, sizeof(efi_path) / sizeof(CHAR16));
-        EFI_FILE_PROTOCOL *file = NULL;
+    EFI_STATUS status = root->Open(root, &file, efi_path, EFI_FILE_MODE_READ, 0);
+    if (status != EFI_SUCCESS || file == NULL) {
+        print_line("Could not open RSL script file.");
+        return;
+    }
 
-        EFI_STATUS status = root->Open(root, &file, efi_path, EFI_FILE_MODE_READ, 0);
-        if (status != EFI_SUCCESS || file == NULL) {
-            draw_text(2, app.row++, "Could not open RSL script file.");
-            return;
-        }
+    // Since we now need `goto`, we must read the whole script into memory first (or array of strings)
+    // For this UEFI demo, we can just load it into a 16KB buffer
+    char script_buf[16384];
+    UINTN total_sz = 0;
+    for (;;) {
+        UINTN sz = 4096;
+        status = file->Read(file, &sz, &script_buf[total_sz]);
+        if (status != EFI_SUCCESS || sz == 0) break;
+        total_sz += sz;
+        if (total_sz >= 16380) break;
+    }
+    script_buf[total_sz] = '\0';
+    file->Close(file);
 
-        unsigned char buffer[256];
-        char script_line[COMMAND_CAPACITY];
-        int line_len = 0;
-
-        for (;;) {
-            UINTN size = sizeof(buffer);
-            status = file->Read(file, &size, buffer);
-            if (status != EFI_SUCCESS || size == 0) {
-                break;
+    // Build an array of line pointers
+    char *lines[256];
+    int num_lines = 0;
+    lines[num_lines++] = script_buf;
+    for (UINTN i = 0; i < total_sz; i++) {
+        if (script_buf[i] == '\r') {
+            script_buf[i] = '\0';
+        } else if (script_buf[i] == '\n') {
+            script_buf[i] = '\0';
+            if (num_lines < 256 && i + 1 < total_sz) {
+                lines[num_lines++] = &script_buf[i + 1];
             }
+        }
+    }
 
-            for (UINTN j = 0; j < size; j++) {
-                unsigned char c = buffer[j];
-                if (c == '\r') continue;
-                if (c == '\n') {
-                    script_line[line_len] = '\0';
-                    if (line_len > 0) {
-                        execute_command(script_line);
-                    }
-                    line_len = 0;
-                } else {
-                    if (line_len < COMMAND_CAPACITY - 1) {
-                        script_line[line_len++] = (char)c;
-                    }
+    // Execute line by line with goto support
+    int pc = 0;
+    while (pc < num_lines) {
+        char *line = lines[pc];
+        // skip leading spaces
+        while (*line == ' ') line++;
+
+        if (line[0] == '\0' || line[0] == '#') {
+            pc++;
+            continue;
+        }
+
+        // Labels
+        if (line[0] == ':') {
+            pc++;
+            continue;
+        }
+
+        // Goto
+        if (starts_with(line, "goto ")) {
+            const char *target = &line[5];
+            for (int i=0; i<num_lines; i++) {
+                char *l = lines[i];
+                while (*l == ' ') l++;
+                if (l[0] == ':' && string_compare(&l[1], target) == 0) {
+                    pc = i;
+                    break;
                 }
             }
+            continue;
         }
 
-        if (line_len > 0) {
-            script_line[line_len] = '\0';
-            execute_command(script_line);
+        // If condition (very basic equality check)
+        // if <var> == <val> goto <label>
+        if (starts_with(line, "if ")) {
+            char var_name[32], val[32], label[32];
+            int idx = 3, v = 0, v2 = 0, lbl = 0;
+            while(line[idx] != ' ' && line[idx] && v < 31) var_name[v++] = line[idx++];
+            var_name[v] = '\0';
+            while(line[idx] == ' ') idx++;
+            if (line[idx] == '=' && line[idx+1] == '=') idx+=2;
+            while(line[idx] == ' ') idx++;
+            while(line[idx] != ' ' && line[idx] && v2 < 31) val[v2++] = line[idx++];
+            val[v2] = '\0';
+            while(line[idx] == ' ') idx++;
+            if (starts_with(&line[idx], "goto ")) idx += 5;
+            while(line[idx] && lbl < 31) label[lbl++] = line[idx++];
+            label[lbl] = '\0';
+
+            const char *actual = get_var_str(var_name);
+            if (string_compare(actual, val) == 0) {
+                for (int i=0; i<num_lines; i++) {
+                    char *ln = lines[i];
+                    while (*ln == ' ') ln++;
+                    if (ln[0] == ':' && string_compare(&ln[1], label) == 0) {
+                        pc = i;
+                        break;
+                    }
+                }
+                continue;
+            } else {
+                pc++;
+                continue;
+            }
         }
 
-        file->Close(file);
+        execute_command(line);
+        pc++;
+    }
 }
 
 /* ---------- CLI lifecycle ---------- */
@@ -1196,10 +1388,165 @@ static void execute_command(char *cmd_str) {
         }
     }
 
+    // Goto support
+    if (starts_with(resolved_cmd, "goto ")) {
+        // Handled by the script executor loop directly
+        return;
+    } else if (starts_with(resolved_cmd, "if ")) {
+        // Handled by the script executor loop directly
+        return;
+    }
+
     if (string_compare(resolved_cmd, "help") == 0) {
         command_help();
+    } else if (string_compare(resolved_cmd, "cls") == 0 || string_compare(resolved_cmd, "clear") == 0) {
+        room_clear();
+        draw_header();
+        term_cursor_y = 0;
+    } else if (starts_with(resolved_cmd, "readfile ")) {
+        // Syntax: readfile <var> <path>
+        char var_name[32], file_path[FILE_PATH_CAPACITY];
+        int idx = 9, v = 0, p = 0;
+        while (resolved_cmd[idx] != ' ' && resolved_cmd[idx] && v < 31) var_name[v++] = resolved_cmd[idx++];
+        var_name[v] = '\0';
+        while (resolved_cmd[idx] == ' ') idx++;
+        while (resolved_cmd[idx] && p < FILE_PATH_CAPACITY-1) file_path[p++] = resolved_cmd[idx++];
+        file_path[p] = '\0';
+
+        if (g_volume_count > 0) {
+            CHAR16 efi_path[FILE_PATH_CAPACITY];
+            EFI_FILE_PROTOCOL *root = resolve_path(file_path, efi_path, sizeof(efi_path)/sizeof(CHAR16));
+            EFI_FILE_PROTOCOL *f = NULL;
+            if (root->Open(root, &f, efi_path, EFI_FILE_MODE_READ, 0) == EFI_SUCCESS) {
+                char buf[4096];
+                UINTN sz = 4095;
+                f->Read(f, &sz, buf);
+                buf[sz] = '\0';
+                set_var_str(var_name, buf);
+                f->Close(f);
+            } else {
+                set_var_str(var_name, "");
+            }
+        }
+    } else if (starts_with(resolved_cmd, "writefile ")) {
+        // Syntax: writefile <path> <var>
+        char file_path[FILE_PATH_CAPACITY], var_name[32];
+        int idx = 10, p = 0, v = 0;
+        while (resolved_cmd[idx] != ' ' && resolved_cmd[idx] && p < FILE_PATH_CAPACITY-1) file_path[p++] = resolved_cmd[idx++];
+        file_path[p] = '\0';
+        while (resolved_cmd[idx] == ' ') idx++;
+        while (resolved_cmd[idx] && v < 31) var_name[v++] = resolved_cmd[idx++];
+        var_name[v] = '\0';
+
+        if (g_volume_count > 0) {
+            const char *data = get_var_str(var_name);
+            UINTN sz = 0;
+            while(data[sz]) sz++;
+
+            CHAR16 efi_path[FILE_PATH_CAPACITY];
+            EFI_FILE_PROTOCOL *root = resolve_path(file_path, efi_path, sizeof(efi_path)/sizeof(CHAR16));
+            EFI_FILE_PROTOCOL *f = NULL;
+            // Delete existing
+            if (root->Open(root, &f, efi_path, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0) == EFI_SUCCESS) {
+                f->Delete(f);
+            }
+            if (root->Open(root, &f, efi_path, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, 0) == EFI_SUCCESS) {
+                f->Write(f, &sz, (void*)data);
+                f->Close(f);
+            }
+        }
+    } else if (starts_with(resolved_cmd, "str_append ")) {
+        // Syntax: str_append <var> <char_code_var>
+        // Appends the character represented by the integer code in <char_code_var> to <var>
+        char var_name[32], code_name[32];
+        int idx = 11, v = 0, c_idx = 0;
+        while (resolved_cmd[idx] != ' ' && resolved_cmd[idx] && v < 31) var_name[v++] = resolved_cmd[idx++];
+        var_name[v] = '\0';
+        while (resolved_cmd[idx] == ' ') idx++;
+        while (resolved_cmd[idx] && c_idx < 31) code_name[c_idx++] = resolved_cmd[idx++];
+        code_name[c_idx] = '\0';
+
+        const char *code_str = get_var_str(code_name);
+        int code = parse_val_or_var(code_str);
+
+        if (code > 0 && code <= 255) { // Only append valid printable ascii
+            const char *old = get_var_str(var_name);
+            char new_buf[4096];
+            int n = 0;
+            while(old[n] && n < 4094) { new_buf[n] = old[n]; n++; }
+            new_buf[n++] = (char)code;
+            new_buf[n] = '\0';
+            set_var_str(var_name, new_buf);
+        }
+    } else if (starts_with(resolved_cmd, "str_append_str ")) {
+        // Syntax: str_append_str <var> <str_var>
+        char var_name[32], var_add[32];
+        int idx = 15, v = 0, a = 0;
+        while (resolved_cmd[idx] != ' ' && resolved_cmd[idx] && v < 31) var_name[v++] = resolved_cmd[idx++];
+        var_name[v] = '\0';
+        while (resolved_cmd[idx] == ' ') idx++;
+        while (resolved_cmd[idx] && a < 31) var_add[a++] = resolved_cmd[idx++];
+        var_add[a] = '\0';
+
+        const char *old = get_var_str(var_name);
+        const char *add = get_var_str(var_add);
+        char new_buf[4096];
+        int n = 0;
+        while(old[n] && n < 4095) { new_buf[n] = old[n]; n++; }
+        int k = 0;
+        while(add[k] && n < 4095) { new_buf[n++] = add[k++]; }
+        new_buf[n] = '\0';
+        set_var_str(var_name, new_buf);
+    } else if (starts_with(resolved_cmd, "str_backspace ")) {
+        // Syntax: str_backspace <var>
+        char var_name[32];
+        int idx = 14, v = 0;
+        while (resolved_cmd[idx] != ' ' && resolved_cmd[idx] && v < 31) var_name[v++] = resolved_cmd[idx++];
+        var_name[v] = '\0';
+        const char *old = get_var_str(var_name);
+        char new_buf[4096];
+        int n = 0;
+        while(old[n]) { new_buf[n] = old[n]; n++; }
+        if (n > 0) n--;
+        new_buf[n] = '\0';
+        set_var_str(var_name, new_buf);
+    } else if (starts_with(resolved_cmd, "alias ")) {
+        if (g_alias_count < MAX_ALIASES) {
+            int k = 6, a_idx = 0;
+            while (resolved_cmd[k] != ' ' && resolved_cmd[k] != '\0' && a_idx < 31) {
+                g_aliases[g_alias_count].alias[a_idx++] = resolved_cmd[k++];
+            }
+            g_aliases[g_alias_count].alias[a_idx] = '\0';
+            if (resolved_cmd[k] == ' ') k++;
+            int t_idx = 0;
+            while (resolved_cmd[k] != '\0' && t_idx < 31) {
+                g_aliases[g_alias_count].target[t_idx++] = resolved_cmd[k++];
+            }
+            g_aliases[g_alias_count].target[t_idx] = '\0';
+            g_alias_count++;
+            print_line("Alias mapped.");
+        }
+    } else if (starts_with(resolved_cmd, "waitkey ")) {
+        char var_name[32];
+        int idx = 8, v = 0;
+        while (resolved_cmd[idx] && v < 31) var_name[v++] = resolved_cmd[idx++];
+        var_name[v] = '\0';
+
+        EFI_INPUT_KEY key;
+        while (!get_input_key(&key)) {
+            sleep_ms(10);
+        }
+        char kbuf[32];
+        if (key.ScanCode != 0) {
+            // Map scancodes to negative integer strings so they can be parsed by the RSL script
+            int_to_str(-((int)key.ScanCode), kbuf);
+        } else {
+            // Map unicode character values to positive integer strings
+            int_to_str((int)key.UnicodeChar, kbuf);
+        }
+        set_var_str(var_name, kbuf);
     } else if (string_compare(resolved_cmd, "about") == 0) {
-        draw_text(2, app.row++, "UEFI CLI with a GML-style text wrapper.");
+        print_line("UEFI CLI with a GML-style text wrapper.");
     } else if (string_compare(resolved_cmd, "uname") == 0) {
         command_uname();
     } else if (string_compare(resolved_cmd, "pwd") == 0) {
@@ -1209,7 +1556,9 @@ static void execute_command(char *cmd_str) {
     } else if (starts_with(resolved_cmd, "cd ")) {
         command_cd(&resolved_cmd[3]);
     } else if (string_compare(resolved_cmd, "ls") == 0) {
-        command_ls();
+        command_ls(0);
+    } else if (string_compare(resolved_cmd, "ll") == 0) {
+        command_ls(1);
     } else if (string_compare(resolved_cmd, "mkdir") == 0) {
         command_mkdir("");
     } else if (starts_with(resolved_cmd, "mkdir ")) {
@@ -1218,6 +1567,18 @@ static void execute_command(char *cmd_str) {
         command_rmdir("");
     } else if (starts_with(resolved_cmd, "rmdir ")) {
         command_rmdir(&resolved_cmd[6]);
+    } else if (string_compare(resolved_cmd, "rm") == 0) {
+        command_rm("");
+    } else if (starts_with(resolved_cmd, "rm ")) {
+        command_rm(&resolved_cmd[3]);
+    } else if (string_compare(resolved_cmd, "cp") == 0) {
+        command_cp("");
+    } else if (starts_with(resolved_cmd, "cp ")) {
+        command_cp(&resolved_cmd[3]);
+    } else if (string_compare(resolved_cmd, "mv") == 0) {
+        command_mv("");
+    } else if (starts_with(resolved_cmd, "mv ")) {
+        command_mv(&resolved_cmd[3]);
     } else if (string_compare(resolved_cmd, "touch") == 0) {
         command_touch("");
     } else if (starts_with(resolved_cmd, "touch ")) {
@@ -1240,14 +1601,10 @@ static void execute_command(char *cmd_str) {
         command_chell("");
     } else if (starts_with(resolved_cmd, "chell ")) {
         command_chell(&resolved_cmd[6]);
-    } else if (string_compare(resolved_cmd, "clear") == 0) {
-        room_clear();
-        draw_header();
-        app.row = 5;
     } else if (string_compare(resolved_cmd, "echo") == 0) {
-        draw_text(2, app.row++, "Usage: echo <text>");
+        print_line("Usage: echo <text>");
     } else if (starts_with(resolved_cmd, "echo ")) {
-        draw_text(2, app.row++, &resolved_cmd[5]);
+        print_line(&resolved_cmd[5]);
     } else if (string_compare(resolved_cmd, "cat") == 0) {
         command_cat("");
     } else if (starts_with(resolved_cmd, "cat ")) {

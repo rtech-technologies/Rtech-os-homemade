@@ -1,0 +1,149 @@
+--- main.c
++++ main.c
+@@ -961,118 +961,6 @@
+     file->Close(file);
+ }
+
+-static void command_micro(const char *path) {
+-    if (*path == '\0') {
+-        print_line("Usage: micro <file>");
+-        return;
+-    }
+-
+-    if (g_volume_count == 0) {
+-        print_line("No volumes mounted.");
+-        return;
+-    }
+-
+-    CHAR16 efi_path[FILE_PATH_CAPACITY];
+-    EFI_FILE_PROTOCOL *root = resolve_path(path, efi_path, sizeof(efi_path) / sizeof(CHAR16));
+-    EFI_FILE_PROTOCOL *file = NULL;
+-
+-    char file_buffer[4096];
+-    int file_len = 0;
+-
+-    // Try to open existing
+-    EFI_STATUS status = root->Open(root, &file, efi_path, EFI_FILE_MODE_READ, 0);
+-    if (status == EFI_SUCCESS && file != NULL) {
+-        UINTN size = sizeof(file_buffer) - 1;
+-        status = file->Read(file, &size, file_buffer);
+-        if (status == EFI_SUCCESS) {
+-            file_len = (int)size;
+-        }
+-        file->Close(file);
+-    }
+-    file_buffer[file_len] = '\0';
+-
+-    int cursor_pos = file_len;
+-    int editing = 1;
+-
+-    while (editing) {
+-        room_clear();
+-        draw_text(0, 0, "MICRO TEXT EDITOR - Press ESC to save and exit");
+-
+-        // Very basic drawing of the file buffer
+-        int r = 2;
+-        int c = 0;
+-        char line_buf[80];
+-        int l_idx = 0;
+-
+-        for (int i = 0; i < file_len; i++) {
+-            if (i == cursor_pos) {
+-                line_buf[l_idx++] = '_';
+-            }
+-            if (file_buffer[i] == '\n') {
+-                line_buf[l_idx] = '\0';
+-                draw_text(0, r++, line_buf);
+-                l_idx = 0;
+-                c = 0;
+-            } else {
+-                line_buf[l_idx++] = file_buffer[i];
+-                c++;
+-                if (c >= 79) {
+-                    line_buf[l_idx] = '\0';
+-                    draw_text(0, r++, line_buf);
+-                    l_idx = 0;
+-                    c = 0;
+-                }
+-            }
+-        }
+-        if (cursor_pos == file_len) {
+-            line_buf[l_idx++] = '_';
+-        }
+-        line_buf[l_idx] = '\0';
+-        draw_text(0, r++, line_buf);
+-
+-        // Wait for key
+-        EFI_INPUT_KEY key = {0};
+-        while (!get_input_key(&key)) {
+-            sleep_ms(10);
+-        }
+-
+-        if (key.ScanCode == 0x17) { // ESC key scan code
+-            editing = 0;
+-        } else if (key.UnicodeChar == '\b' || key.UnicodeChar == 127) { // Backspace
+-            if (cursor_pos > 0) {
+-                cursor_pos--;
+-                file_len--;
+-                for (int i = cursor_pos; i < file_len; i++) {
+-                    file_buffer[i] = file_buffer[i + 1];
+-                }
+-                file_buffer[file_len] = '\0';
+-            }
+-        } else if (key.UnicodeChar == '\r' || key.UnicodeChar == '\n') {
+-            if (file_len < 4095) {
+-                for (int i = file_len; i > cursor_pos; i--) {
+-                    file_buffer[i] = file_buffer[i - 1];
+-                }
+-                file_buffer[cursor_pos] = '\n';
+-                cursor_pos++;
+-                file_len++;
+-                file_buffer[file_len] = '\0';
+-            }
+-        } else if (key.UnicodeChar >= 32 && key.UnicodeChar <= 126) {
+-            if (file_len < 4095) {
+-                for (int i = file_len; i > cursor_pos; i--) {
+-                    file_buffer[i] = file_buffer[i - 1];
+-                }
+-                file_buffer[cursor_pos] = (char)key.UnicodeChar;
+-                cursor_pos++;
+-                file_len++;
+-                file_buffer[file_len] = '\0';
+-            }
+-        }
+-    }
+-
+-    // Save logic
+-    // We must delete the old file to truncate it, then recreate it.
+-    status = root->Open(root, &file, efi_path, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
+-    if (status == EFI_SUCCESS && file != NULL) {
+-        file->Delete(file);
+-    }
+-
+-    status = root->Open(root, &file, efi_path, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE, 0);
+-    if (status == EFI_SUCCESS && file != NULL) {
+-        UINTN w_len = file_len;
+-        file->Write(file, &w_len, file_buffer);
+-        file->Close(file);
+-    }
+-
+-    room_clear();
+-    draw_header();
+-    redraw_term();
+-    print_line("File saved.");
+-}
+-
+ static void command_let(const char *args) {
+     if (*args == '\0') {
+         print_line("Usage: let <var_name> = <expression>");
+@@ -1734,10 +1622,6 @@
+         command_cat("");
+     } else if (starts_with(resolved_cmd, "cat ")) {
+         command_cat(&resolved_cmd[4]);
+-    } else if (string_compare(resolved_cmd, "micro") == 0) {
+-        command_micro("");
+-    } else if (starts_with(resolved_cmd, "micro ")) {
+-        command_micro(&resolved_cmd[6]);
+     } else if (string_compare(resolved_cmd, "exit") == 0 || string_compare(resolved_cmd, "q") == 0) {
+         app.exit_requested = 1;
+     } else if (app.command_length > 0) {
