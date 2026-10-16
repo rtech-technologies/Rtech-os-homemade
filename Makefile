@@ -97,7 +97,6 @@ run: $(ISO)
 		-device qemu-xhci,id=xhci \
 		-device usb-storage,drive=usbdisk,bus=xhci.0 \
 		-device usb-kbd,bus=xhci.0 \
-		-display none \
 		-m 256M \
 		-serial file:build/serial.log
 
