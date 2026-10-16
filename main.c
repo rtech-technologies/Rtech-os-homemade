@@ -327,6 +327,9 @@ static void draw_text(int x, int y, const char *str) {
 static void draw_header(void);
 
 static void redraw_term(void) {
+    // Only wipe text area, let room_clear handle complete flushes if needed
+    // But since UEFI ConOut doesn't have partial clear easily, we'll room_clear
+    // to prevent graphical ghosting, but ONLY if we actually scroll or redraw fully
     room_clear();
     draw_header();
     for (int i = 0; i <= term_cursor_y; i++) {
@@ -335,13 +338,17 @@ static void redraw_term(void) {
 }
 
 static void print_line(const char *str) {
+    int scrolled = 0;
     if (term_cursor_y >= TERM_ROWS - 1) {
         // Scroll up
+        scrolled = 1;
         for (int i = 0; i < TERM_ROWS - 1; i++) {
             for (int j = 0; j < TERM_COLS; j++) {
                 term_buffer[i][j] = term_buffer[i+1][j];
             }
         }
+        // clear the last line buffer
+        for(int j = 0; j < TERM_COLS; j++) term_buffer[TERM_ROWS-1][j] = '\0';
     } else {
         term_cursor_y++;
     }
@@ -350,7 +357,13 @@ static void print_line(const char *str) {
     while (str[i] && i < TERM_COLS - 1) { term_buffer[term_cursor_y][i] = str[i]; i++; }
     term_buffer[term_cursor_y][i] = '\0';
     app.row = 5 + term_cursor_y + 1; // Put prompt below the last line
-    redraw_term();
+
+    if (scrolled) {
+        redraw_term();
+    } else {
+        // Just draw the single new line without clearing the whole screen
+        draw_text(2, 5 + term_cursor_y, term_buffer[term_cursor_y]);
+    }
 }
 
 static int get_input_key(EFI_INPUT_KEY *key) {
@@ -1315,9 +1328,17 @@ static void game_create(void) {
     history_index = -1;
     g_var_count = 0;
 
+    // Clear terminal buffer
+    for (int i = 0; i < TERM_ROWS; i++) {
+        for (int j = 0; j < TERM_COLS; j++) {
+            term_buffer[i][j] = '\0';
+        }
+    }
+    term_cursor_y = 0;
+
     room_clear();
     draw_header();
-    draw_text(2, 5, "Type 'help' for a list of commands.");
+    print_line("Type 'help' for a list of commands.");
 
     enumerate_volumes();
 }
@@ -1402,9 +1423,15 @@ static void execute_command(char *cmd_str) {
     if (string_compare(resolved_cmd, "help") == 0) {
         command_help();
     } else if (string_compare(resolved_cmd, "cls") == 0 || string_compare(resolved_cmd, "clear") == 0) {
+        for (int i = 0; i < TERM_ROWS; i++) {
+            for (int j = 0; j < TERM_COLS; j++) {
+                term_buffer[i][j] = '\0';
+            }
+        }
+        term_cursor_y = 0;
+        app.row = 6;
         room_clear();
         draw_header();
-        term_cursor_y = 0;
     } else if (starts_with(resolved_cmd, "readfile ")) {
         // Syntax: readfile <var> <path>
         char var_name[32], file_path[FILE_PATH_CAPACITY];
@@ -1622,16 +1649,35 @@ static void execute_command(char *cmd_str) {
     }
     app.command[backup_len] = '\0';
     app.command_length = backup_len;
-
-    if (app.row > 22) {
-        room_clear();
-        draw_header();
-        app.row = 5;
-    }
 }
 
 static void run_command(void) {
     app.command[app.command_length] = '\0';
+
+    // Echo the command we just ran into the terminal history buffer
+    char full_prompt[128];
+    full_prompt[0] = 'O'; full_prompt[1] = 'S'; full_prompt[2] = ':';
+    int p_len = 3;
+    full_prompt[p_len++] = 'D';
+    full_prompt[p_len++] = (char)('0' + g_selected_volume);
+    full_prompt[p_len++] = ':';
+    if (app.cwd[0] == '\0') {
+        full_prompt[p_len++] = '/';
+    } else {
+        int k = 0;
+        while (app.cwd[k] != '\0' && p_len < 120) {
+            full_prompt[p_len++] = app.cwd[k++];
+        }
+    }
+    full_prompt[p_len++] = '>'; full_prompt[p_len++] = ' ';
+    int c_idx = 0;
+    while(app.command[c_idx] && p_len < 127) {
+        full_prompt[p_len++] = app.command[c_idx++];
+    }
+    full_prompt[p_len] = '\0';
+
+    print_line(full_prompt);
+
     execute_command(app.command);
     app.command_length = 0;
     app.command[0] = '\0';
@@ -1720,6 +1766,9 @@ static void game_draw(void) {
     prompt_buf[p_len++] = '>';
     prompt_buf[p_len++] = ' ';
     prompt_buf[p_len] = '\0';
+
+    // Ensure app.row is correctly positioned just below the last printed line
+    app.row = 5 + term_cursor_y + 1;
 
     /*
      * Clear the whole input row first. Adjust INPUT_WIDTH if your console
