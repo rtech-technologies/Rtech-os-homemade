@@ -828,7 +828,7 @@ static void command_touch(const char *args) {
     const char *content = NULL;
     int f_idx = 0;
 
-    while (args[f_idx] != '\0' && args[f_idx] != ' ' && f_idx < sizeof(filename) - 1) {
+    while (args[f_idx] != '\0' && args[f_idx] != ' ' && f_idx < (int)sizeof(filename) - 1) {
         filename[f_idx] = args[f_idx];
         f_idx++;
     }
@@ -943,7 +943,7 @@ static void command_let(const char *args) {
 
     char var_name[32];
     int v_idx = 0;
-    while (args[v_idx] != '\0' && args[v_idx] != ' ' && args[v_idx] != '=' && v_idx < sizeof(var_name) - 1) {
+    while (args[v_idx] != '\0' && args[v_idx] != ' ' && args[v_idx] != '=' && v_idx < (int)sizeof(var_name) - 1) {
         var_name[v_idx] = args[v_idx];
         v_idx++;
     }
