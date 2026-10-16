@@ -1,0 +1,5 @@
+echo RTECH OS Booted
+echo Loading configurations...
+let boot_count = 1
+calc boot_count + 1
+echo Startup sequence complete!

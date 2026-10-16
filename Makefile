@@ -1,79 +1,105 @@
-# Basic Makefile for RSL-OS kernel
+CC       = x86_64-w64-mingw32-gcc
 
-CC := gcc
-LD := ld
-AS := as
+CFLAGS   = -ffreestanding -fno-stack-protector -fno-builtin \
+           -fno-asynchronous-unwind-tables -fno-unwind-tables \
+           -mno-red-zone -Wall -Wextra
 
-CFLAGS := -Wall -Wextra -O2 -pipe \
-    -ffreestanding -fno-stack-protector -fno-stack-check \
-    -fno-lto -fPIE -m64 -march=x86-64 -mno-80387 -mno-mmx -mno-red-zone
-CPPFLAGS := -Ikernel
+TARGET      = build/BOOTX64.EFI
+OBJ         = build/main.o
+ISO         = os.iso
+IMG_TMP     = fat_disk.img
+ISO_ROOT    = build/iso-root
+STARTUP_RSL = startup.rsl
+INCLUDE_DIR = include
 
-LDFLAGS := -nostdlib -pie -z text -z max-page-size=0x1000 -T kernel/linker.ld
+MKFS_FAT ?= /usr/sbin/mkfs.fat
 
-KERNEL_SRC := $(wildcard kernel/*.c) $(wildcard drivers/storage/*.c) $(wildcard fs/*.c) $(wildcard runtime/*.c) $(wildcard compiler/*.c) $(wildcard vm/*.c)
-KERNEL_OBJ := $(KERNEL_SRC:.c=.o)
-KERNEL_BIN := build/kernel.elf
-ISO_IMAGE  := build/rsl-os.iso
+OVMF_CODE ?= /usr/share/OVMF/OVMF_CODE_4M.fd
+OVMF_VARS ?= /usr/share/OVMF/OVMF_VARS_4M.fd
+OVMF_VARS_RUN = build/OVMF_VARS.fd
 
-LIMINE_GIT := https://github.com/limine-bootloader/limine.git
-LIMINE_BRANCH := v8.x-binary
-LIMINE_DIR := limine-bin
+.PHONY: all run clean
 
-.PHONY: all clean iso
+all: $(ISO)
 
-all: $(ISO_IMAGE)
-
-kernel/%.o: kernel/%.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
-
-$(KERNEL_BIN): $(KERNEL_OBJ) kernel/linker.ld
+$(OBJ): main.c
 	mkdir -p build
-	$(LD) $(KERNEL_OBJ) $(LDFLAGS) -o $@
+	$(CC) $(CFLAGS) -c $< -o $@
 
-$(LIMINE_DIR):
-	git clone $(LIMINE_GIT) --branch $(LIMINE_BRANCH) --depth=1 $(LIMINE_DIR)
-	make -C $(LIMINE_DIR)
+$(TARGET): $(OBJ)
+	$(CC) -nostdlib \
+		-Wl,--subsystem,10 \
+		-Wl,-e,efi_main \
+		-Wl,--no-undefined \
+		$< -o $@
 
-iso: $(ISO_IMAGE)
+$(ISO): $(TARGET)
+	@test -f "$(STARTUP_RSL)" || { \
+		echo "Missing $(STARTUP_RSL); create it beside the Makefile."; exit 1; \
+	}
+	@test -x "$(MKFS_FAT)" || { \
+		echo "FAT formatter not found at $(MKFS_FAT)"; exit 1; \
+	}
+	@command -v mmd >/dev/null 2>&1 || { \
+		echo "mtools missing; install with: apt install mtools"; exit 1; \
+	}
+	@command -v mcopy >/dev/null 2>&1 || { \
+		echo "mtools missing; install with: apt install mtools"; exit 1; \
+	}
+	@command -v xorriso >/dev/null 2>&1 || { \
+		echo "xorriso missing; install with: apt install xorriso"; exit 1; }
 
-$(ISO_IMAGE): $(KERNEL_BIN) $(LIMINE_DIR) limine.conf
-	rm -rf build/iso_root
-	mkdir -p build/iso_root/boot
-	cp $(KERNEL_BIN) build/iso_root/boot/
-	cp limine.conf build/iso_root/boot/
-	mkdir -p build/iso_root/boot/limine
-	cp -v $(LIMINE_DIR)/limine-bios.sys $(LIMINE_DIR)/limine-bios-cd.bin $(LIMINE_DIR)/limine-uefi-cd.bin build/iso_root/boot/limine/
-	cp -v $(LIMINE_DIR)/BOOTX64.EFI $(LIMINE_DIR)/BOOTIA32.EFI build/iso_root/boot/limine/
-	xorriso -as mkisofs -b boot/limine/limine-bios-cd.bin \
-		-no-emul-boot -boot-load-size 4 -boot-info-table \
-		--efi-boot boot/limine/limine-uefi-cd.bin \
-		-efi-boot-part --efi-boot-image --protective-msdos-label \
-		build/iso_root -o $(ISO_IMAGE)
-	$(LIMINE_DIR)/limine bios-install $(ISO_IMAGE)
+	rm -f "$(IMG_TMP)" "$(ISO)"
+	rm -rf "$(ISO_ROOT)"
+	mkdir -p "$(ISO_ROOT)/EFI/BOOT"
+
+	dd if=/dev/zero of="$(IMG_TMP)" bs=1M count=64 status=none
+	"$(MKFS_FAT)" -F 32 "$(IMG_TMP)"
+
+	mmd -i "$(IMG_TMP)" ::/EFI
+	mmd -i "$(IMG_TMP)" ::/EFI/BOOT
+	mmd -i "$(IMG_TMP)" ::/bin
+	mmd -i "$(IMG_TMP)" ::/bin/include
+
+	mcopy -i "$(IMG_TMP)" "$(TARGET)" ::/EFI/BOOT/BOOTX64.EFI
+	mcopy -i "$(IMG_TMP)" "$(STARTUP_RSL)" ::/startup.rsl
+	mcopy -i "$(IMG_TMP)" "chell_ap.cfg" ::/chell_ap.cfg
+
+	@if [ -d "$(INCLUDE_DIR)" ] && \
+	    [ -n "$$(find "$(INCLUDE_DIR)" -mindepth 1 -print -quit)" ]; then \
+		mcopy -s -i "$(IMG_TMP)" "$(INCLUDE_DIR)"/* ::/bin/include/; \
+	fi
+
+	cp "$(TARGET)" "$(ISO_ROOT)/EFI/BOOT/BOOTX64.EFI"
+	cp "$(IMG_TMP)" "$(ISO_ROOT)/fat_disk.img"
+
+	xorriso -as mkisofs \
+		-R -J -V UEFI_OS \
+		-eltorito-alt-boot \
+		-e fat_disk.img \
+		-no-emul-boot \
+		-o "$(ISO)" "$(ISO_ROOT)"
+
+	@echo "Created $(ISO)"
+
+run: $(ISO)
+	@test -f "$(OVMF_CODE)" || { \
+		echo "OVMF code image not found: $(OVMF_CODE)"; exit 1; \
+	}
+	@test -f "$(OVMF_VARS)" || { \
+		echo "OVMF variables image not found: $(OVMF_VARS)"; exit 1; \
+	}
+	cp "$(OVMF_VARS)" "$(OVMF_VARS_RUN)"
+	qemu-system-x86_64 \
+		-drive if=pflash,format=raw,readonly=on,file="$(OVMF_CODE)" \
+		-drive if=pflash,format=raw,file="$(OVMF_VARS_RUN)" \
+		-drive if=none,format=raw,file="$(IMG_TMP)",id=usbdisk \
+		-device qemu-xhci,id=xhci \
+		-device usb-storage,drive=usbdisk,bus=xhci.0 \
+		-device usb-kbd,bus=xhci.0 \
+		-display none \
+		-m 256M \
+		-serial file:build/serial.log
 
 clean:
-	rm -f $(KERNEL_OBJ)
-	rm -rf build
-	rm -rf $(LIMINE_DIR)
-
-# Host Tests Target
-.PHONY: test
-test: tests/test_rsllinker tests/test_bmp tests/test_rsl_compiler
-	./tests/test_rsllinker
-	./tests/test_bmp
-	./tests/test_rsl_compiler
-
-tests/test_rsllinker: tests/test_rsllinker.c runtime/rsllinker.c
-	gcc -Wall -Wextra -g -o $@ tests/test_rsllinker.c runtime/rsllinker.c
-
-tests/test_bmp: tests/test_bmp.c runtime/bmp_loader.c
-	gcc -Wall -Wextra -g -o $@ tests/test_bmp.c runtime/bmp_loader.c
-
-tests/test_rsl_compiler: tests/test_rsl_compiler.c compiler/parser.c compiler/lexer.c
-	gcc -Wall -Wextra -g -o $@ $^
-
-# Run QEMU locally
-.PHONY: run
-run: all
-	./run_qemu.sh
+	rm -rf build "$(ISO)" "$(IMG_TMP)"

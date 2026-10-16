@@ -1,7 +1,4 @@
 build/
-limine-bin/
-*.o
-*.elf
-*.iso
-.cache/
+os.iso
+fat_disk.img
 disk.img
