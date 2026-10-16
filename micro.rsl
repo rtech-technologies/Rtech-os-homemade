@@ -11,37 +11,41 @@ let buffer = ""
 
 :start_edit
 cls
-echo MICRO EDITOR v1.0
+echo MICRO EDITOR v1.1
 echo -------------------
 echo_var buffer
 echo
 echo -------------------
-echo ^X Exit (ESC)  ^O Write Out (CTRL+S not supported, use ESC prompt)
+echo ^X Exit (Save)   ESC (Discard)
 
 :wait_input
-waitkey k
+waitkey k mod
 if k == "" goto wait_input
 
-# Check if ESC was pressed (scancode -23)
-if k == "-23" goto save
+# CTRL + X
+if k == "120" goto check_save
+if k == "88" goto check_save
 
-# Check if Backspace was pressed
+# ESC (scancode -23) to exit without saving
+if k == "-23" goto finish
+
+# Backspace
 if k == "-14" goto backspace
 if k == "8" goto backspace
 if k == "127" goto backspace
 
-# Check if Enter was pressed
+# Enter
 if k == "-28" goto enter
 if k == "13" goto enter
 if k == "10" goto enter
 
-# Append character to buffer using our new str_append_str capability
-# Since str_append takes an ascii code directly via variable lookup, we use str_append
+# Only regular keys if not modified by ctrl
+if mod == "1" goto wait_input
+
 str_append buffer k
 goto start_edit
 
 :enter
-# ascii 10 is newline
 let nl = "10"
 str_append buffer nl
 goto start_edit
@@ -50,11 +54,23 @@ goto start_edit
 str_backspace buffer
 goto start_edit
 
+:check_save
+if mod == "1" goto save
+# If mod isn't 1, it's just a normal 'x' or 'X' key press
+str_append buffer k
+goto start_edit
+
 :save
+if target_file == "" goto prompt_file
+writefile target_file buffer
+echo File saved.
+goto finish
+
+:prompt_file
 cls
-prompt_str save_path "Enter filename to save: "
-if save_path == "" goto finish
-writefile save_path buffer
+prompt_str target_file "Enter filename to save: "
+if target_file == "" goto finish
+writefile target_file buffer
 echo File saved.
 
 :finish

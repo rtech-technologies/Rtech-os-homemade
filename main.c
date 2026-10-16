@@ -86,6 +86,38 @@ typedef struct {
     void *WaitForKey;
 } EFI_SIMPLE_TEXT_INPUT_PROTOCOL;
 
+
+typedef unsigned char EFI_KEY_TOGGLE_STATE;
+
+typedef struct {
+    unsigned int KeyShiftState;
+    EFI_KEY_TOGGLE_STATE KeyToggleState;
+} EFI_KEY_STATE;
+
+typedef struct {
+    EFI_INPUT_KEY Key;
+    EFI_KEY_STATE KeyState;
+} EFI_KEY_DATA;
+
+typedef EFI_STATUS (*EFI_INPUT_READ_KEY_EX)(
+    void *This,
+    EFI_KEY_DATA *KeyData
+);
+
+typedef struct _EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL {
+    void *Reset;
+    EFI_INPUT_READ_KEY_EX ReadKeyStrokeEx;
+    void *WaitForKeyEx;
+    void *SetState;
+    void *RegisterKeyNotify;
+    void *UnregisterKeyNotify;
+} EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL;
+
+#define EFI_SHIFT_STATE_VALID     0x80000000
+#define EFI_RIGHT_CONTROL_PRESSED 0x00000004
+#define EFI_LEFT_CONTROL_PRESSED  0x00000008
+
+
 /* ---------- File protocols ---------- */
 
 typedef struct _EFI_FILE_PROTOCOL EFI_FILE_PROTOCOL;
@@ -243,6 +275,7 @@ typedef struct {
 } AppState;
 
 static EFI_SYSTEM_TABLE *g_st;
+static EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL *g_con_in_ex = NULL;
 static AppState app;
 
 static EFI_FILE_PROTOCOL *g_volume_roots[MAX_VOLUMES];
@@ -268,6 +301,12 @@ typedef struct {
 #define MAX_ALIASES 16
 static CommandAlias g_aliases[MAX_ALIASES];
 static int g_alias_count = 0;
+
+
+static const EFI_GUID EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL_GUID = {
+    0xdd9e7534, 0x7762, 0x4698,
+    {0x8c, 0x14, 0xf5, 0x85, 0x17, 0xa6, 0x25, 0xaa}
+};
 
 static const EFI_GUID EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID = {
     0x964e5b22, 0x6459, 0x11d2,
@@ -398,13 +437,26 @@ static void print_multiline(const char *str) {
     }
 }
 
-static int get_input_key(EFI_INPUT_KEY *key) {
+static int get_input_key(EFI_INPUT_KEY *key, unsigned int *shift_state) {
+    if (g_con_in_ex) {
+        EFI_KEY_DATA key_data;
+        if (g_con_in_ex->ReadKeyStrokeEx(g_con_in_ex, &key_data) == EFI_SUCCESS) {
+            *key = key_data.Key;
+            if (shift_state) {
+                *shift_state = key_data.KeyState.KeyShiftState;
+            }
+            return 1;
+        }
+        return 0;
+    }
+
     if (g_st == NULL || g_st->ConIn == NULL || g_st->ConIn->ReadKeyStroke == NULL) {
         return 0;
     }
     if (g_st->ConIn->ReadKeyStroke(g_st->ConIn, key) != EFI_SUCCESS) {
         return 0;
     }
+    if (shift_state) *shift_state = 0;
     return 1;
 }
 
@@ -1661,24 +1713,45 @@ static void execute_command(char *cmd_str) {
             print_line("Alias mapped.");
         }
     } else if (starts_with(resolved_cmd, "waitkey ")) {
+        const char *args = &resolved_cmd[8];
         char var_name[32];
-        int idx = 8, v = 0;
-        while (resolved_cmd[idx] && v < 31) var_name[v++] = resolved_cmd[idx++];
-        var_name[v] = '\0';
+        char mod_var[32];
+        int v_idx = 0;
+        int m_idx = 0;
+
+        while (args[v_idx] && args[v_idx] != ' ' && v_idx < 31) {
+            var_name[v_idx] = args[v_idx];
+            v_idx++;
+        }
+        var_name[v_idx] = '\0';
+
+        if (args[v_idx] == ' ') {
+            v_idx++;
+            while (args[v_idx] && args[v_idx] != ' ' && m_idx < 31) {
+                mod_var[m_idx] = args[v_idx];
+                m_idx++;
+                v_idx++;
+            }
+        }
+        mod_var[m_idx] = '\0';
 
         EFI_INPUT_KEY key;
-        while (!get_input_key(&key)) {
+        unsigned int shift = 0;
+        while (!get_input_key(&key, &shift)) {
             sleep_ms(10);
         }
         char kbuf[32];
         if (key.ScanCode != 0) {
-            // Map scancodes to negative integer strings so they can be parsed by the RSL script
             int_to_str(-((int)key.ScanCode), kbuf);
         } else {
-            // Map unicode character values to positive integer strings
             int_to_str((int)key.UnicodeChar, kbuf);
         }
         set_var_str(var_name, kbuf);
+
+        if (mod_var[0] != '\0') {
+            int is_ctrl = (shift & EFI_LEFT_CONTROL_PRESSED) || (shift & EFI_RIGHT_CONTROL_PRESSED);
+            char cbuf[2]; cbuf[0] = is_ctrl ? '1' : '0'; cbuf[1] = '\0'; set_var_str(mod_var, cbuf);
+        }
     } else if (string_compare(resolved_cmd, "about") == 0) {
         print_line("UEFI CLI with a GML-style text wrapper.");
     } else if (string_compare(resolved_cmd, "uname") == 0) {
@@ -1759,7 +1832,7 @@ static void execute_command(char *cmd_str) {
         int i_idx = 0;
         while (1) {
             EFI_INPUT_KEY key = {0};
-            while (!get_input_key(&key)) sleep_ms(10);
+            while (!get_input_key(&key, NULL)) sleep_ms(10);
 
             if (key.UnicodeChar == '\r' || key.UnicodeChar == '\n') {
                 break;
@@ -1840,7 +1913,7 @@ static void run_command(void) {
 
 static void game_step(void) {
     EFI_INPUT_KEY key = {0};
-    if (!get_input_key(&key)) {
+    if (!get_input_key(&key, NULL)) {
         return;
     }
 
@@ -1959,6 +2032,14 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) {
     (void)ImageHandle;
     if (SystemTable == NULL) return 1;
     g_st = SystemTable;
+    g_st->ConOut->ClearScreen(g_st->ConOut);
+
+    g_st->BootServices->HandleProtocol(
+        g_st->ConsoleInHandle,
+        (EFI_GUID *)&EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL_GUID,
+        (void **)&g_con_in_ex
+    );
+
     app_main();
     return EFI_SUCCESS;
 }
