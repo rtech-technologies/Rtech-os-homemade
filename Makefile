@@ -64,7 +64,7 @@ $(ISO): $(TARGET)
 	mcopy -i "$(IMG_TMP)" "$(TARGET)" ::/EFI/BOOT/BOOTX64.EFI
 	mcopy -i "$(IMG_TMP)" "$(STARTUP_RSL)" ::/startup.rsl
 	mcopy -i "$(IMG_TMP)" "chell_ap.cfg" ::/chell_ap.cfg
-	mcopy -i "$(IMG_TMP)" "micro.rsl" ::/micro.rsl
+	mcopy -o -i "$(IMG_TMP)" "micro.rsl" ::/micro.rsl
 
 	@if [ -d "$(INCLUDE_DIR)" ] && \
 	    [ -n "$$(find "$(INCLUDE_DIR)" -mindepth 1 -print -quit)" ]; then \

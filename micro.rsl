@@ -1,37 +1,49 @@
 # micro.rsl - The RSL Userland Text Editor
 
-# Clear screen and draw header
+if sys_arg_1 == "" goto no_arg
+let target_file = sys_arg_1
+readfile buffer target_file
+goto start_edit
+
+:no_arg
+let target_file = ""
+let buffer = ""
+
 :start_edit
 cls
 echo MICRO EDITOR v1.0
 echo -------------------
-# Load the target file content into global buffer if passed, otherwise empty string
-if buffer == "" goto create_buffer
-goto display
-
-:create_buffer
-let buffer = ""
-
-:display
-echo buffer
+echo_var buffer
+echo
 echo -------------------
-echo Press ESC (scancode -23) to save/exit, or type.
+echo ^X Exit (ESC)  ^O Write Out (CTRL+S not supported, use ESC prompt)
 
 :wait_input
 waitkey k
 if k == "" goto wait_input
 
-# Check if ESC was pressed (we map ESC scancode 23 to string "-23" in waitkey)
+# Check if ESC was pressed (scancode -23)
 if k == "-23" goto save
 
 # Check if Backspace was pressed
 if k == "-14" goto backspace
-# ASCII Backspace/DEL
 if k == "8" goto backspace
 if k == "127" goto backspace
 
-# Append character to buffer
+# Check if Enter was pressed
+if k == "-28" goto enter
+if k == "13" goto enter
+if k == "10" goto enter
+
+# Append character to buffer using our new str_append_str capability
+# Since str_append takes an ascii code directly via variable lookup, we use str_append
 str_append buffer k
+goto start_edit
+
+:enter
+# ascii 10 is newline
+let nl = "10"
+str_append buffer nl
 goto start_edit
 
 :backspace
@@ -40,7 +52,11 @@ goto start_edit
 
 :save
 cls
-echo Enter filename to save:
-# In a real shell we'd have a prompt wait loop, we'll hardcode saving to "out.txt" for this demo
-writefile out.txt buffer
-echo File saved to out.txt
+prompt_str save_path "Enter filename to save: "
+if save_path == "" goto finish
+writefile save_path buffer
+echo File saved.
+
+:finish
+cls
+echo Exiting micro...

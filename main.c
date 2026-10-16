@@ -354,7 +354,14 @@ static void print_line(const char *str) {
     }
 
     int i = 0;
-    while (str[i] && i < TERM_COLS - 1) { term_buffer[term_cursor_y][i] = str[i]; i++; }
+    while (str[i] && i < TERM_COLS - 1) {
+        if (str[i] == '\n' || str[i] == '\r') {
+            term_buffer[term_cursor_y][i] = ' ';
+        } else {
+            term_buffer[term_cursor_y][i] = str[i];
+        }
+        i++;
+    }
     term_buffer[term_cursor_y][i] = '\0';
     app.row = 5 + term_cursor_y + 1; // Put prompt below the last line
 
@@ -363,6 +370,31 @@ static void print_line(const char *str) {
     } else {
         // Just draw the single new line without clearing the whole screen
         draw_text(2, 5 + term_cursor_y, term_buffer[term_cursor_y]);
+    }
+}
+
+static void print_multiline(const char *str) {
+    char line_buf[128];
+    int l_idx = 0;
+    int i = 0;
+    while (str[i]) {
+        if (str[i] == '\n') {
+            line_buf[l_idx] = '\0';
+            print_line(line_buf);
+            l_idx = 0;
+        } else if (str[i] != '\r') {
+            if (l_idx < 127) line_buf[l_idx++] = str[i];
+            if (l_idx == 75) {
+                line_buf[l_idx] = '\0';
+                print_line(line_buf);
+                l_idx = 0;
+            }
+        }
+        i++;
+    }
+    if (l_idx > 0) {
+        line_buf[l_idx] = '\0';
+        print_line(line_buf);
     }
 }
 
@@ -1104,8 +1136,38 @@ static void command_let(const char *args) {
         return;
     }
 
-    int val = eval_expression(p);
-    set_var(var_name, val);
+    // Try string assignment first
+    int is_string = 0;
+    if (*p == '"') {
+        is_string = 1;
+        char str_val[128];
+        int s_idx = 0;
+        p++; // skip quote
+        while (*p != '"' && *p != '\0' && s_idx < 127) str_val[s_idx++] = *p++;
+        str_val[s_idx] = '\0';
+        set_var_str(var_name, str_val);
+    } else {
+        // Look up variable string representation if it's a simple identifier
+        int is_var = 1;
+        for(int k=0; p[k] != '\0'; k++) {
+            if(p[k] == '+' || p[k] == '-' || p[k] == '*' || p[k] == '/') {
+                is_var = 0;
+                break;
+            }
+        }
+        if (is_var) {
+            const char* var_str = get_var_str(p);
+            if (var_str[0] != '\0') {
+                is_string = 1;
+                set_var_str(var_name, var_str);
+            }
+        }
+    }
+
+    if (!is_string) {
+        int val = eval_expression(p);
+        set_var(var_name, val);
+    }
 
     char msg[64];
     msg[0] = 'S'; msg[1] = 'e'; msg[2] = 't'; msg[3] = ' ';
@@ -1115,10 +1177,17 @@ static void command_let(const char *args) {
     msg[m_idx++] = ' '; msg[m_idx++] = '='; msg[m_idx++] = ' ';
     msg[m_idx] = '\0';
 
-    char num_buf[32];
-    int_to_str(val, num_buf);
-    k = 0;
-    while (num_buf[k] != '\0' && m_idx < 62) msg[m_idx++] = num_buf[k++];
+    if (!is_string) {
+        char num_buf[32];
+        int val = eval_expression(p);
+        int_to_str(val, num_buf);
+        k = 0;
+        while (num_buf[k] != '\0' && m_idx < 62) msg[m_idx++] = num_buf[k++];
+    } else {
+        const char *s_val = get_var_str(var_name);
+        k = 0;
+        while (s_val[k] != '\0' && m_idx < 62) msg[m_idx++] = s_val[k++];
+    }
     msg[m_idx] = '\0';
 
     print_line(msg);
@@ -1185,11 +1254,21 @@ static void command_calc(const char *expr) {
 
 /* ---------- RSL Script Engine (`chell`) ---------- */
 
-static void command_chell(const char *path) {
-    if (*path == '\0') {
-        print_line("Usage: chell <script.rsl>");
+static void command_chell(const char *args) {
+    if (*args == '\0') {
+        print_line("Usage: chell <script.rsl> [arg]");
         return;
     }
+
+    char path[128], arg1[128];
+    int idx = 0, p_idx = 0, a_idx = 0;
+    while (args[idx] && args[idx] != ' ' && p_idx < 127) path[p_idx++] = args[idx++];
+    path[p_idx] = '\0';
+    while (args[idx] == ' ') idx++;
+    while (args[idx] && a_idx < 127) arg1[a_idx++] = args[idx++];
+    arg1[a_idx] = '\0';
+
+    set_var_str("sys_arg_1", arg1);
 
     if (g_volume_count == 0) {
         print_line("No volumes mounted.");
@@ -1212,10 +1291,11 @@ static void command_chell(const char *path) {
     UINTN total_sz = 0;
     for (;;) {
         UINTN sz = 4096;
+        if (16384 - total_sz < 4096) sz = 16384 - total_sz;
         status = file->Read(file, &sz, &script_buf[total_sz]);
         if (status != EFI_SUCCESS || sz == 0) break;
         total_sz += sz;
-        if (total_sz >= 16380) break;
+        if (total_sz >= 16383) break;
     }
     script_buf[total_sz] = '\0';
     file->Close(file);
@@ -1277,8 +1357,16 @@ static void command_chell(const char *path) {
             while(line[idx] == ' ') idx++;
             if (line[idx] == '=' && line[idx+1] == '=') idx+=2;
             while(line[idx] == ' ') idx++;
-            while(line[idx] != ' ' && line[idx] && v2 < 31) val[v2++] = line[idx++];
+
+            if (line[idx] == '"') {
+                idx++;
+                while(line[idx] != '"' && line[idx] && v2 < 31) val[v2++] = line[idx++];
+                if (line[idx] == '"') idx++;
+            } else {
+                while(line[idx] != ' ' && line[idx] && v2 < 31) val[v2++] = line[idx++];
+            }
             val[v2] = '\0';
+
             while(line[idx] == ' ') idx++;
             if (starts_with(&line[idx], "goto ")) idx += 5;
             while(line[idx] && lbl < 31) label[lbl++] = line[idx++];
@@ -1433,18 +1521,24 @@ static void execute_command(char *cmd_str) {
         room_clear();
         draw_header();
     } else if (starts_with(resolved_cmd, "readfile ")) {
-        // Syntax: readfile <var> <path>
-        char var_name[32], file_path[FILE_PATH_CAPACITY];
+        // Syntax: readfile <var> <path_var_or_literal>
+        char var_name[32], file_path_arg[FILE_PATH_CAPACITY];
         int idx = 9, v = 0, p = 0;
         while (resolved_cmd[idx] != ' ' && resolved_cmd[idx] && v < 31) var_name[v++] = resolved_cmd[idx++];
         var_name[v] = '\0';
         while (resolved_cmd[idx] == ' ') idx++;
-        while (resolved_cmd[idx] && p < FILE_PATH_CAPACITY-1) file_path[p++] = resolved_cmd[idx++];
-        file_path[p] = '\0';
+        while (resolved_cmd[idx] && p < FILE_PATH_CAPACITY-1) file_path_arg[p++] = resolved_cmd[idx++];
+        file_path_arg[p] = '\0';
+
+        const char *actual_path = file_path_arg;
+        const char *resolved_path_var = get_var_str(file_path_arg);
+        if (resolved_path_var[0] != '\0') {
+            actual_path = resolved_path_var;
+        }
 
         if (g_volume_count > 0) {
             CHAR16 efi_path[FILE_PATH_CAPACITY];
-            EFI_FILE_PROTOCOL *root = resolve_path(file_path, efi_path, sizeof(efi_path)/sizeof(CHAR16));
+            EFI_FILE_PROTOCOL *root = resolve_path(actual_path, efi_path, sizeof(efi_path)/sizeof(CHAR16));
             EFI_FILE_PROTOCOL *f = NULL;
             if (root->Open(root, &f, efi_path, EFI_FILE_MODE_READ, 0) == EFI_SUCCESS) {
                 char buf[4096];
@@ -1458,14 +1552,20 @@ static void execute_command(char *cmd_str) {
             }
         }
     } else if (starts_with(resolved_cmd, "writefile ")) {
-        // Syntax: writefile <path> <var>
-        char file_path[FILE_PATH_CAPACITY], var_name[32];
+        // Syntax: writefile <path_var_or_literal> <var>
+        char file_path_arg[FILE_PATH_CAPACITY], var_name[32];
         int idx = 10, p = 0, v = 0;
-        while (resolved_cmd[idx] != ' ' && resolved_cmd[idx] && p < FILE_PATH_CAPACITY-1) file_path[p++] = resolved_cmd[idx++];
-        file_path[p] = '\0';
+        while (resolved_cmd[idx] != ' ' && resolved_cmd[idx] && p < FILE_PATH_CAPACITY-1) file_path_arg[p++] = resolved_cmd[idx++];
+        file_path_arg[p] = '\0';
         while (resolved_cmd[idx] == ' ') idx++;
         while (resolved_cmd[idx] && v < 31) var_name[v++] = resolved_cmd[idx++];
         var_name[v] = '\0';
+
+        const char *actual_path = file_path_arg;
+        const char *resolved_path_var = get_var_str(file_path_arg);
+        if (resolved_path_var[0] != '\0') {
+            actual_path = resolved_path_var;
+        }
 
         if (g_volume_count > 0) {
             const char *data = get_var_str(var_name);
@@ -1473,7 +1573,7 @@ static void execute_command(char *cmd_str) {
             while(data[sz]) sz++;
 
             CHAR16 efi_path[FILE_PATH_CAPACITY];
-            EFI_FILE_PROTOCOL *root = resolve_path(file_path, efi_path, sizeof(efi_path)/sizeof(CHAR16));
+            EFI_FILE_PROTOCOL *root = resolve_path(actual_path, efi_path, sizeof(efi_path)/sizeof(CHAR16));
             EFI_FILE_PROTOCOL *f = NULL;
             // Delete existing
             if (root->Open(root, &f, efi_path, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0) == EFI_SUCCESS) {
@@ -1634,6 +1734,54 @@ static void execute_command(char *cmd_str) {
         print_line("Usage: echo <text>");
     } else if (starts_with(resolved_cmd, "echo ")) {
         print_line(&resolved_cmd[5]);
+    } else if (starts_with(resolved_cmd, "echo_var ")) {
+        char var_name[32];
+        int idx = 9, v = 0;
+        while(resolved_cmd[idx] && v < 31) var_name[v++] = resolved_cmd[idx++];
+        var_name[v] = '\0';
+        print_multiline(get_var_str(var_name));
+    } else if (starts_with(resolved_cmd, "prompt_str ")) {
+        // Syntax: prompt_str <var_name> <prompt_text>
+        char var_name[32];
+        int idx = 11, v = 0;
+        while(resolved_cmd[idx] && resolved_cmd[idx] != ' ' && v < 31) var_name[v++] = resolved_cmd[idx++];
+        var_name[v] = '\0';
+        while(resolved_cmd[idx] == ' ') idx++;
+
+        print_line(&resolved_cmd[idx]);
+
+        char input_buf[128];
+        int i_idx = 0;
+        while (1) {
+            EFI_INPUT_KEY key = {0};
+            while (!get_input_key(&key)) sleep_ms(10);
+
+            if (key.UnicodeChar == '\r' || key.UnicodeChar == '\n') {
+                break;
+            } else if (key.UnicodeChar == '\b' || key.UnicodeChar == 127) {
+                if (i_idx > 0) i_idx--;
+            } else if (key.UnicodeChar >= 32 && key.UnicodeChar <= 126 && i_idx < 127) {
+                input_buf[i_idx++] = (char)key.UnicodeChar;
+            }
+
+            input_buf[i_idx] = '\0';
+
+            // Re-render the prompt line natively
+            char render_buf[128];
+            int r = 0;
+            while (resolved_cmd[idx+r] && r < 40) { render_buf[r] = resolved_cmd[idx+r]; r++; }
+            render_buf[r++] = ' ';
+            int b = 0;
+            while (input_buf[b] && r < 120) { render_buf[r++] = input_buf[b++]; }
+            render_buf[r++] = '_';
+            render_buf[r] = '\0';
+
+            // clear line visually and redraw
+            for(int c=0; c<78; c++) draw_text(2+c, 5+term_cursor_y, " ");
+            draw_text(2, 5+term_cursor_y, render_buf);
+        }
+        input_buf[i_idx] = '\0';
+        set_var_str(var_name, input_buf);
     } else if (string_compare(resolved_cmd, "cat") == 0) {
         command_cat("");
     } else if (starts_with(resolved_cmd, "cat ")) {
