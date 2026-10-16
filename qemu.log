@@ -1,0 +1,5 @@
+Hello World from Serial!
+Executing hello.rsl...
+Hello from the script engine!
+12345
+qemu-system-x86_64: terminating on signal 15 from pid 259464 ()
