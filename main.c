@@ -1295,6 +1295,12 @@ static void command_chell(const char *path) {
         execute_command(line);
         pc++;
     }
+
+    // Forcefully restore terminal state visually after script completes
+    app.command_length = 0;
+    app.command[0] = '\0';
+    app.line_dirty = 1;
+    redraw_term();
 }
 
 /* ---------- CLI lifecycle ---------- */
