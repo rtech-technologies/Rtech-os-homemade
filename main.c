@@ -642,8 +642,11 @@ static void load_chell_cfg(void) {
                     g_aliases[g_alias_count].alias[a_idx] = '\0';
                     if (line[k] == ' ') k++;
 
+                    // strip quotes if alias target is quoted
+                    if (line[k] == '"') k++;
+
                     int t_idx = 0;
-                    while (line[k] != '\0' && t_idx < 31) {
+                    while (line[k] != '\0' && line[k] != '"' && t_idx < 31) {
                         g_aliases[g_alias_count].target[t_idx++] = line[k++];
                     }
                     g_aliases[g_alias_count].target[t_idx] = '\0';
@@ -1647,8 +1650,10 @@ static void execute_command(char *cmd_str) {
             }
             g_aliases[g_alias_count].alias[a_idx] = '\0';
             if (resolved_cmd[k] == ' ') k++;
+
+            if (resolved_cmd[k] == '"') k++;
             int t_idx = 0;
-            while (resolved_cmd[k] != '\0' && t_idx < 31) {
+            while (resolved_cmd[k] != '\0' && resolved_cmd[k] != '"' && t_idx < 31) {
                 g_aliases[g_alias_count].target[t_idx++] = resolved_cmd[k++];
             }
             g_aliases[g_alias_count].target[t_idx] = '\0';
